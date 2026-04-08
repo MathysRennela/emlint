@@ -129,6 +129,7 @@ def test_format_json_has_top_level_fields():
     assert "num_error_mechanisms" in data
     assert "all_passed" in data
     assert "has_errors" in data
+    assert "has_warnings" in data
     assert "results" in data
 
 
@@ -176,3 +177,51 @@ def test_format_json_has_errors_false_for_warning_only():
 def test_format_json_has_errors_true_for_error_severity():
     data = json.loads(format_json(_report(_failed("completeness", severity="error"))))
     assert data["has_errors"] is True
+
+
+# ---------------------------------------------------------------------------
+# Report.all_passed / has_errors / has_warnings — direct unit tests
+# ---------------------------------------------------------------------------
+
+def test_all_passed_true_when_empty():
+    assert _report().all_passed()
+
+
+def test_all_passed_true_when_all_pass():
+    assert _report(_passed(), _passed("sensitivity", "warning")).all_passed()
+
+
+def test_all_passed_false_when_any_fails():
+    assert not _report(_passed(), _failed()).all_passed()
+
+
+def test_has_errors_false_when_all_pass():
+    assert not _report(_passed(), _passed("sensitivity", "warning")).has_errors()
+
+
+def test_has_errors_false_when_empty():
+    assert not _report().has_errors()
+
+
+def test_has_errors_true_when_error_severity_fails():
+    assert _report(_failed("completeness", severity="error")).has_errors()
+
+
+def test_has_errors_false_when_only_warning_fails():
+    assert not _report(_failed("sensitivity", severity="warning")).has_errors()
+
+
+def test_has_warnings_false_when_all_pass():
+    assert not _report(_passed(), _passed("sensitivity", "warning")).has_warnings()
+
+
+def test_has_warnings_false_when_empty():
+    assert not _report().has_warnings()
+
+
+def test_has_warnings_true_when_warning_severity_fails():
+    assert _report(_failed("sensitivity", severity="warning")).has_warnings()
+
+
+def test_has_warnings_false_when_only_error_fails():
+    assert not _report(_failed("completeness", severity="error")).has_warnings()

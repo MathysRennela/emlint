@@ -15,6 +15,7 @@ class PropertyResult:
     severity: Literal["error", "warning"]
     message: str
     counter_example: str | None = None
+    counter_example_data: dict | None = None
 
 
 @dataclass
@@ -63,6 +64,7 @@ def format_json(report: Report) -> str:
         "num_error_mechanisms": report.num_error_mechanisms,
         "all_passed": report.all_passed(),
         "has_errors": report.has_errors(),
+        "has_warnings": report.has_warnings(),
         "results": [dataclasses.asdict(r) for r in report.results],
     }
     return json.dumps(data, indent=2)

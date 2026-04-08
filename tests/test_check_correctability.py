@@ -117,6 +117,7 @@ def test_counter_example_contains_detector_label():
     m0 = _mech(0.1, detectors=frozenset({3}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({3}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
+    assert result.counter_example is not None
     assert "D3" in result.counter_example
 
 
@@ -125,6 +126,7 @@ def test_counter_example_contains_both_observable_sets():
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
     ce = result.counter_example
+    assert ce is not None
     assert "L0" in ce and "L1" in ce
 
 
@@ -173,6 +175,7 @@ def test_truncation_message_when_many_conflicts():
         mechs.append(_mech(0.1, detectors=frozenset({i}), observables=frozenset({1})))
     result = check_correctability(_model(*mechs))
     assert not result.passed
+    assert result.counter_example is not None
     assert "more" in result.counter_example
 
 
@@ -214,3 +217,72 @@ def test_n_identical_mechanisms_always_passes(dets, obs, p, n):
     """N copies of the same mechanism share both detectors and observables — never a conflict."""
     mechs = [_mech(p, detectors=dets, observables=obs)] * n
     assert check_correctability(_model(*mechs)).passed
+
+
+# ---------------------------------------------------------------------------
+# counter_example_data
+# ---------------------------------------------------------------------------
+
+def test_passing_result_has_no_counter_example_data():
+    m = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    result = check_correctability(_model(m))
+    assert result.counter_example_data is None
+
+
+def test_failing_result_has_counter_example_data():
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
+    result = check_correctability(_model(m0, m1))
+    assert result.counter_example_data is not None
+
+
+def test_counter_example_data_has_syndrome_and_observable_sets_keys():
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
+    result = check_correctability(_model(m0, m1))
+    data = result.counter_example_data
+    assert "syndrome" in data
+    assert "observable_sets" in data
+
+
+def test_counter_example_data_syndrome_is_sorted_list_of_ints():
+    m0 = _mech(0.1, detectors=frozenset({3, 7}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({3, 7}), observables=frozenset({1}))
+    result = check_correctability(_model(m0, m1))
+    syndrome = result.counter_example_data["syndrome"]
+    assert isinstance(syndrome, list)
+    assert all(isinstance(d, int) for d in syndrome)
+    assert syndrome == sorted(syndrome)
+    assert set(syndrome) == {3, 7}
+
+
+def test_counter_example_data_observable_sets_is_list_of_lists():
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
+    result = check_correctability(_model(m0, m1))
+    obs_sets = result.counter_example_data["observable_sets"]
+    assert isinstance(obs_sets, list)
+    assert all(isinstance(s, list) for s in obs_sets)
+
+
+def test_counter_example_data_observable_sets_contains_both_conflicting_sets():
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
+    result = check_correctability(_model(m0, m1))
+    obs_sets = result.counter_example_data["observable_sets"]
+    assert [0] in obs_sets
+    assert [1] in obs_sets
+
+
+def test_counter_example_data_reflects_first_conflict():
+    # Two conflicts: syndrome {D0} and {D1}
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
+    m2 = _mech(0.1, detectors=frozenset({1}), observables=frozenset({0}))
+    m3 = _mech(0.1, detectors=frozenset({1}), observables=frozenset({2}))
+    result = check_correctability(_model(m0, m1, m2, m3))
+    data = result.counter_example_data
+    # syndrome is one specific conflicting syndrome (either {0} or {1})
+    assert len(data["syndrome"]) == 1
+    assert data["syndrome"][0] in {0, 1}
+    assert len(data["observable_sets"]) == 2

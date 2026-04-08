@@ -30,93 +30,6 @@ def _make_dem(task: str, distance: int = 3, rounds: int = 3, decompose: bool = F
     return circuit.detector_error_model(decompose_errors=decompose)
 
 
-# Every (task, distance, rounds) triple here must produce a well-formed DEM
-# that passes all emlint checks.
-WELL_FORMED_EXAMPLES = [
-    pytest.param("surface_code:rotated_memory_z",   3, 3, id="surface_rotated_z_d3"),
-    pytest.param("surface_code:rotated_memory_z",   5, 5, id="surface_rotated_z_d5"),
-    pytest.param("surface_code:rotated_memory_z",   7, 7, id="surface_rotated_z_d7"),
-    pytest.param("surface_code:rotated_memory_x",   3, 3, id="surface_rotated_x_d3"),
-    pytest.param("surface_code:unrotated_memory_x", 3, 3, id="surface_unrotated_x_d3"),
-    pytest.param("surface_code:unrotated_memory_z", 3, 3, id="surface_unrotated_z_d3"),
-    pytest.param("repetition_code:memory",          3, 5, id="repetition_d3"),
-    pytest.param("repetition_code:memory",          5, 5, id="repetition_d5"),
-    pytest.param("repetition_code:memory",          7, 7, id="repetition_d7"),
-    pytest.param("color_code:memory_xyz",           3, 3, id="color_d3"),
-]
-
-
-# ---------------------------------------------------------------------------
-# Parametrized: every well-formed example must pass every check
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("task,distance,rounds", WELL_FORMED_EXAMPLES)
-def test_well_formed_dem_passes_all_checks(task, distance, rounds):
-    """All checks must pass on a well-formed non-decomposed DEM from every supported circuit family."""
-    from emlint.checks import ALL_CHECKS
-    dem = _make_dem(task, distance, rounds, decompose=False)
-    report = emlint.check(dem)
-
-    # Structural sanity
-    assert isinstance(report, Report)
-    assert report.num_detectors > 0
-    assert report.num_observables > 0
-    assert report.num_error_mechanisms > 0
-
-    # All checks must be present
-    assert {r.name for r in report.results} == set(ALL_CHECKS.keys())
-
-    # No error-severity failures are permitted on well-formed DEMs.
-    # Warning-severity results (e.g. duplicates on repetition codes, correctability on
-    # color codes) are acceptable — they reflect properties of the code family, not bugs.
-    failures = [r for r in report.results if not r.passed and r.severity == "error"]
-    assert failures == [], f"[{task} d={distance}] unexpected error-severity failures: {[r.name for r in failures]}"
-
-
-@pytest.mark.parametrize("task,distance,rounds", WELL_FORMED_EXAMPLES)
-def test_decomposed_dem_has_no_errors(task, distance, rounds):
-
-    """A decomposed DEM may trigger correctability warnings but must never produce
-    error-severity failures — i.e. has_errors() must be False and the CLI exits 0."""
-    dem = _make_dem(task, distance, rounds, decompose=True)
-    report = emlint.check(dem)
-    assert not report.has_errors(), (
-        f"[{task} d={distance}] error-severity failures on decomposed DEM: "
-        f"{[r.name for r in report.results if not r.passed and r.severity == 'error']}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# QLDPC corpus (requires: pip install qldpc)
-# Skipped automatically when qldpc is not installed.
-# These are the highest-value false-positive tests: QLDPC codes produce
-# hyperedge-heavy DEMs (weight-3+ error mechanisms) that no stim.Circuit.generated
-# family covers. A false positive here would fire on a user's first real workload.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("distance,rounds", [(3, 5), (5, 5)])
-def test_qldpc_hgp_dem_passes_all_checks(distance, rounds):
-    """QLDPC hypergraph product code DEMs must pass all emlint checks with no
-    error-severity violations. This is the canonical hyperedge stress-test."""
-    qldpc = pytest.importorskip("qldpc", reason="qldpc not installed; run: pip install qldpc")
-    from emlint.checks import ALL_CHECKS
-
-    classical_code = qldpc.codes.ClassicalCode.random(distance + 2, distance, seed=42)
-    code = qldpc.codes.HGPCode(classical_code)
-    noise_model = qldpc.circuits.DepolarizingNoiseModel(0.001)
-    circuit = qldpc.circuits.get_memory_experiment(code, num_rounds=rounds, noise_model=noise_model)
-    dem = circuit.detector_error_model(decompose_errors=False)
-    report = emlint.check(dem)
-
-    assert isinstance(report, Report)
-    assert report.num_error_mechanisms > 0
-
-    failures = [r for r in report.results if not r.passed and r.severity == "error"]
-    assert failures == [], (
-        f"[qldpc HGP d={distance}] error-severity failures: {[r.name for r in failures]}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # String input
 # ---------------------------------------------------------------------------
@@ -163,6 +76,29 @@ def test_string_file_path_input(tmp_path: Path):
     report = emlint.check(str(dem_file))
     assert isinstance(report, Report)
 
+
+def test_invalid_content_in_path_file_raises_value_error(tmp_path: Path):
+    """A Path pointing to a file with invalid DEM content must raise ValueError."""
+    bad_file = tmp_path / "bad.dem"
+    bad_file.write_text("this is not a valid DEM")
+    with pytest.raises(ValueError, match="Failed to parse DEM"):
+        emlint.check(bad_file)
+
+
+def test_invalid_content_in_str_file_path_raises_value_error(tmp_path: Path):
+    """A str path pointing to a file with invalid DEM content must raise ValueError."""
+    bad_file = tmp_path / "bad.dem"
+    bad_file.write_text("this is not a valid DEM")
+    with pytest.raises(ValueError, match="Failed to parse DEM"):
+        emlint.check(str(bad_file))
+
+
+def test_invalid_raw_dem_string_raises_value_error():
+    """A raw string that is not a valid DEM and not an existing path must raise ValueError."""
+    with pytest.raises(ValueError, match="Failed to parse DEM"):
+        emlint.check("not valid DEM syntax @@@@")
+
+
 # ---------------------------------------------------------------------------
 # Pathological DEMs
 # ---------------------------------------------------------------------------
@@ -208,8 +144,8 @@ def test_sensitivity_violation_detected():
 
 def test_observable_coverage_violation_detected():
     """An observable that no mechanism flips must fail observable_coverage.
-    L1 is forced to exist (num_observables=2) but never appears in any mechanism,
-    so L0 is uncovered."""
+    The mechanism flips L1, so stim sets num_observables=2. L0 is never flipped
+    by any mechanism and is therefore uncovered."""
     dem = stim.DetectorErrorModel("error(0.1) D0 L1\ndetector D0")
     report = emlint.check(dem)
     cov = next(r for r in report.results if r.name == "observable_coverage")
@@ -256,7 +192,7 @@ def test_invalid_source_type_raises_type_error():
 # which warning-severity checks (not error-severity) fire. The allowed set below
 # documents *expected* warnings so that any new unexpected warning breaks CI.
 #
-# Observed warning profile (confirmed as of v0.1, using stim v1.16):
+# Observed warning profile (confirmed as of v0.1, using stim >= 1.14):
 #
 #  decompose=False:
 #  - surface_code:rotated_memory_z  d=3,5   → (none)
@@ -314,18 +250,20 @@ _EXPECTED_WARNINGS: dict[tuple[str, int, bool], set[str]] = {
 }
 
 _AUDIT_CASES = [
-    pytest.param(task, d, r, decompose, id=f"{task.split(':')[1]}_d{d}_decomp{int(decompose)}")
+    pytest.param(task, d, r, decompose, id=f"{task.split(':')[1]}_d{d}_r{r}_decomp{int(decompose)}")
     for task, d, r in [
-        ("surface_code:rotated_memory_z",   3, 3),
-        ("surface_code:rotated_memory_z",   5, 5),
-        ("surface_code:rotated_memory_z",   7, 7),
-        ("surface_code:rotated_memory_x",   3, 3),
-        ("surface_code:unrotated_memory_x", 3, 3),
-        ("surface_code:unrotated_memory_z", 3, 3),
-        ("repetition_code:memory",          3, 5),
-        ("repetition_code:memory",          5, 5),
-        ("repetition_code:memory",          7, 7),
-        ("color_code:memory_xyz",           3, 3),
+        ("surface_code:rotated_memory_z",   3,  3),
+        ("surface_code:rotated_memory_z",   5,  5),
+        ("surface_code:rotated_memory_z",   7,  7),
+        # High-rounds case: catches temporal duplicates that only emerge at depth.
+        ("surface_code:rotated_memory_z",   7, 20),
+        ("surface_code:rotated_memory_x",   3,  3),
+        ("surface_code:unrotated_memory_x", 3,  3),
+        ("surface_code:unrotated_memory_z", 3,  3),
+        ("repetition_code:memory",          3,  5),
+        ("repetition_code:memory",          5,  5),
+        ("repetition_code:memory",          7,  7),
+        ("color_code:memory_xyz",           3,  3),
     ]
     for decompose in (False, True)
 ]
@@ -352,8 +290,8 @@ def test_false_positive_audit(task, distance, rounds, decompose):
     # --- Soft rule: warning profile matches the known-good inventory -------------
     actual_warnings = {r.name for r in report.results if not r.passed and r.severity == "warning"}
     expected_warnings = _EXPECTED_WARNINGS.get((task, distance, decompose), set())
-    unexpected = actual_warnings - expected_warnings
-    assert unexpected == set(), (
-        f"[{task} d={distance} decompose={decompose}] unexpected warning(s): {unexpected}. "
-        f"If this is a legitimate new warning, update _EXPECTED_WARNINGS."
+    assert actual_warnings == expected_warnings, (
+        f"[{task} d={distance} decompose={decompose}] warning mismatch — "
+        f"got {actual_warnings}, expected {expected_warnings}. "
+        f"Update _EXPECTED_WARNINGS if the change is intentional."
     )

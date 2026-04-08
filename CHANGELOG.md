@@ -6,6 +6,15 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.1] — 2026-04-08
+
+### Changed
+
+- Quality of life improvements to the presentation of counter-examples.
+- Minor optimizations to the checks implemented in v0.1.1.
+
+---
+
 ## [0.1.0] — 2026-03-26
 
 ### Added
@@ -41,11 +50,6 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 - Unit tests for all 6 production checks: passing and failing cases, counter-example content
 - Integration tests on `stim.Circuit.generated` surface codes (d=3, 5, 7) and repetition codes
 - Stim integration tests with `decompose_errors=False` and `decompose_errors=True`
-
-**Examples**:
-- `examples/buggy.dem` — d=5 surface code with a missing detector (sensitivity violation)
-- `examples/fixed.dem` — corrected version of the above
-- `examples/benchmark_v0_1.py` — §3/§4 release-gate benchmark (shift-left index + performance)
 
 ### Known false positives
 
@@ -84,4 +88,5 @@ None. This is the initial release.
 
 ---
 
+[0.1.1]: https://github.com/MathysRennela/dem-linter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/MathysRennela/dem-linter/releases/tag/v0.1.0

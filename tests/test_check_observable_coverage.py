@@ -109,6 +109,7 @@ def test_only_uncovered_observables_reported():
     )
     result = check_observable_coverage(model)
     assert not result.passed
+    assert result.counter_example is not None
     assert "L1" in result.counter_example
     assert "L0" not in result.counter_example
 
@@ -123,7 +124,47 @@ def test_truncation_message_when_many_uncovered_observables():
     model = ErrorModel(detectors=set(), observables=set(range(n)), error_mechanisms=[])
     result = check_observable_coverage(model)
     assert not result.passed
+    assert result.counter_example is not None
     assert "more" in result.counter_example
+
+
+# ---------------------------------------------------------------------------
+# Counter-example format
+# ---------------------------------------------------------------------------
+
+def test_counter_example_uses_L_prefix():
+    """Uncovered observables must be reported as 'L{n}', not bare integers."""
+    model = ErrorModel(detectors=set(), observables={5}, error_mechanisms=[])
+    result = check_observable_coverage(model)
+    assert result.counter_example is not None
+    assert "L5" in result.counter_example
+    assert "5" in result.counter_example  # sanity: the index itself appears
+
+
+def test_message_contains_violation_count():
+    """The failure message must state how many observables are uncovered."""
+    model = ErrorModel(detectors=set(), observables={0, 1, 2}, error_mechanisms=[])
+    result = check_observable_coverage(model)
+    assert not result.passed
+    assert "3" in result.message
+
+
+def test_partial_coverage_counter_example_lists_only_uncovered():
+    """When L0 and L2 are covered but L1 and L3 are not, counter-example must
+    contain L1 and L3 but not L0 or L2."""
+    m0 = _mech(0.1, observables=frozenset({0}))
+    m2 = _mech(0.1, observables=frozenset({2}))
+    model = ErrorModel(
+        detectors=set(),
+        observables={0, 1, 2, 3},
+        error_mechanisms=[m0, m2],
+    )
+    result = check_observable_coverage(model)
+    assert not result.passed
+    assert "L1" in result.counter_example
+    assert "L3" in result.counter_example
+    assert "L0" not in result.counter_example
+    assert "L2" not in result.counter_example
 
 
 # ---------------------------------------------------------------------------
@@ -152,3 +193,47 @@ def test_declared_observable_not_in_any_mechanism_always_fails(o, p):
         error_mechanisms=[_mech(p, observables=frozenset())],
     )
     assert not check_observable_coverage(model).passed
+
+
+# ---------------------------------------------------------------------------
+# counter_example_data
+# ---------------------------------------------------------------------------
+
+def test_passing_result_has_no_counter_example_data():
+    m = _mech(0.1, observables=frozenset({0}))
+    result = check_observable_coverage(_model(m))
+    assert result.counter_example_data is None
+
+
+def test_failing_result_has_counter_example_data():
+    model = ErrorModel(detectors=set(), observables={0}, error_mechanisms=[])
+    result = check_observable_coverage(model)
+    assert result.counter_example_data is not None
+
+
+def test_counter_example_data_has_observables_key():
+    model = ErrorModel(detectors=set(), observables={0}, error_mechanisms=[])
+    result = check_observable_coverage(model)
+    assert "observables" in result.counter_example_data
+
+
+def test_counter_example_data_observables_is_list_of_ints():
+    model = ErrorModel(detectors=set(), observables={1, 3}, error_mechanisms=[])
+    result = check_observable_coverage(model)
+    data = result.counter_example_data
+    assert isinstance(data["observables"], list)
+    assert all(isinstance(o, int) for o in data["observables"])
+
+
+def test_counter_example_data_contains_all_uncovered_observables():
+    model = ErrorModel(detectors=set(), observables={1, 3}, error_mechanisms=[])
+    result = check_observable_coverage(model)
+    assert set(result.counter_example_data["observables"]) == {1, 3}
+
+
+def test_counter_example_data_excludes_covered_observables():
+    m = _mech(0.1, observables=frozenset({0}))
+    model = ErrorModel(detectors=set(), observables={0, 1}, error_mechanisms=[m])
+    result = check_observable_coverage(model)
+    assert result.counter_example_data["observables"] == [1]
+

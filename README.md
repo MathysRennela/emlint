@@ -13,30 +13,35 @@ you run a single shot.
 
 ## The problem
 
-A `DETECTOR` instruction omitted in round 2 of a d=5 surface code leaves
-detector D17 wired to nothing. The decoder silently miscorrects. The logical
-error rate rises. The bug is invisible until ~10⁶ Sinter shots (≈45 minutes
-on a standard laptop).
+A `DETECTOR` instruction omitted in round 2 of a circuit leaves detector D1
+wired to nothing. The decoder silently miscorrects. The logical error rate
+rises. The bug is invisible until ~10⁶ Sinter shots (≈45 minutes on a
+standard laptop).
 
 ```
-$ emlint check examples/buggy.dem
+$ emlint check 'error(0.001) D0 L0
+detector(0,0,0) D0
+detector(1,0,2) D1'
 
-Detectors: 24  Observables: 1  Error mechanisms: 35
+Detectors: 2  Observables: 1  Error mechanisms: 1
 
   ✓ detectability: All error mechanisms that flip observables also trigger detectors.
   ✗ sensitivity: 1 detector(s) are never triggered by any error mechanism.
-      Counter-example: Detector(s) not triggered by any error mechanism: D17
+      Counter-example: Detector(s) not triggered by any error mechanism: D1@(1,0,2)
   ✓ observable_coverage: All declared observables are flipped by at least one error mechanism.
-  ✓ probability_bounds: All error probabilities are within (0, 0.5].
-  ✓ duplicates: No duplicate error mechanisms found.
-  ✓ correctability: All syndromes map to a unique observable set.
+  ✓ probability_bounds: All error mechanism probabilities are in (0, 0.5].
+  ✓ duplicates: No duplicate mechanism signatures found.
+  ✓ correctability: Every syndrome maps to at most one distinct set of logical observables.
 ```
 
-2ms. One line. No simulation. D17 carries coordinates `(1, 0, 2)` — round 2,
+2ms. One line. No simulation. D1 carries coordinates `(1, 0, 2)` — round 2,
 position (1, 0) — so you know exactly where in the circuit to look.
 
 ```
-$ emlint check examples/fixed.dem
+$ emlint check 'error(0.001) D0 L0
+error(0.001) D1
+detector(0,0,0) D0
+detector(1,0,2) D1'
 
   ✓ detectability  ✓ sensitivity  ✓ observable_coverage
   ✓ probability_bounds  ✓ duplicates  ✓ correctability
@@ -87,11 +92,25 @@ print(emlint.format_text(report))
 
 ### CI integration
 
-Add to `.github/workflows/qec.yml`:
+Add to `.github/workflows/emlint.yml`:
 
 ```yaml
-- name: Lint DEM
-  run: pip install emlint && emlint check circuit.dem
+name: emlint
+on:
+  push:
+    paths: ['**.dem']
+  pull_request:
+    paths: ['**.dem']
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install emlint
+        run: pip install emlint
+      - name: Run emlint on all DEM files
+        run: find . -name "*.dem" | xargs -I{} emlint check {}
 ```
 
 ## Checks
@@ -108,6 +127,31 @@ Add to `.github/workflows/qec.yml`:
 All checks operate on the standalone `.dem` file — no original circuit required.
 Each failing check produces a counter-example pointing to the specific mechanism
 or detector at fault.
+
+## Formal grounding
+
+The checks are grounded in the linear-algebra framework for detector error models
+developed in arXiv:2407.13826. The central object is the **detector error matrix**
+H ∈ 𝔽₂^{d×e}:
+
+> **Definition** (Detector error matrix). H is a binary matrix with d rows
+> (one per detector) and e columns (one per error mechanism). H_{i,j} = 1 if
+> detector i is violated by error j.
+
+The six checks are properties of H and the accompanying observable map L ∈ 𝔽₂^{k×e}:
+
+| Check | Formal condition |
+|---|---|
+| `detectability` | ∃j : obs(j) ≠ ∅ ∧ H[:,j] = **0** |
+| `sensitivity` | ∃i : H[i,:] = **0** |
+| `correctability` | ∃j≠k : H[:,j] = H[:,k] ∧ obs(j) ≠ obs(k) |
+| `duplicates` | ∃j≠k : H[:,j] = H[:,k] ∧ obs(j) = obs(k) |
+| `observable_coverage` | ∃l : L[l,:] = **0** |
+| `probability_bounds` | ∃j : p_j ∉ (0, 0.5] |
+
+The paper also establishes that a DEM contains all information necessary to
+verify fault-tolerance properties at the gadget, schedule, and circuit levels —
+the theoretical basis for emlint's "no original circuit required" promise.
 
 ## Connecting a failed check to the circuit bug
 
@@ -253,25 +297,6 @@ maps to conflicting corrections — that is the code distance problem and is not
 checked here. A future version will address multi-fault correctability via
 compositional reasoning (pre/post-conditions on circuit segments).
 
-## qLDPC & lifted-product codes
-
-emlint accepts any DEM, including those generated from hypergraph product (HGP)
-and lifted-product (Bivariate Bicycle) codes. Pass the DEM from any source:
-
-```python
-# From a qldpc-generated code
-import qldpc, stim, emlint
-
-classical = qldpc.codes.ClassicalCode.random(7, 5, seed=0)
-code = qldpc.codes.HGPCode(classical)
-noise = qldpc.circuits.DepolarizingNoiseModel(0.001)
-circuit = qldpc.circuits.get_memory_experiment(code, num_rounds=5, noise_model=noise)
-report = emlint.check(circuit.detector_error_model(decompose_errors=False))
-```
-
-The six structural checks apply universally — they do not assume surface code
-topology and do not require knowledge of the underlying code family.
-
 ## Known false positives
 
 **`correctability` with `decompose_errors=True`**
@@ -292,6 +317,14 @@ duplicates. The warning is accurate — the XOR-fused probability is shown — b
 may not require user action in degenerate code families.
 
 *Mitigation:* use `--severity error` in CI to suppress.
+
+## References
+
+- [arXiv:2407.13826](https://arxiv.org/abs/2407.13826) — formal linear-algebra framework for detector error models;
+  source of the detector, noise model, detector error matrix, and circuit
+  distance definitions that ground the emlint checks.
+- [arXiv:2603.20127](https://arxiv.org/abs/2603.20127) — formal decoder evaluation; operates at the circuit + decoder
+  layer and assumes a structurally sound DEM (the precondition emlint establishes).
 
 ## License
 

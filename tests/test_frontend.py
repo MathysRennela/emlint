@@ -127,6 +127,53 @@ def test_repeat_block_detectors_are_flattened():
 
 
 # ---------------------------------------------------------------------------
+# detector_coords
+# ---------------------------------------------------------------------------
+
+def test_detector_coords_populated_from_annotated_detector():
+    dem = stim.DetectorErrorModel("detector(1, 2, 3) D0")
+    model = from_stim_dem(dem)
+    assert model.detector_coords[0] == (1.0, 2.0, 3.0)
+
+
+def test_detector_coords_empty_when_no_coordinates():
+    dem = stim.DetectorErrorModel("detector D0")
+    model = from_stim_dem(dem)
+    assert 0 not in model.detector_coords
+
+
+def test_detector_coords_multiple_detectors():
+    dem = stim.DetectorErrorModel("detector(0, 0) D0\ndetector(1, 0) D1")
+    model = from_stim_dem(dem)
+    assert model.detector_coords[0] == (0.0, 0.0)
+    assert model.detector_coords[1] == (1.0, 0.0)
+
+
+def test_detector_coords_only_annotated_detectors_populated():
+    """A bare detector declaration contributes no coordinates entry."""
+    dem = stim.DetectorErrorModel("detector(5, 6) D0\ndetector D1")
+    model = from_stim_dem(dem)
+    assert 0 in model.detector_coords
+    assert 1 not in model.detector_coords
+
+
+def test_det_label_with_coords_appears_in_sensitivity_counter_example():
+    """check_sensitivity uses _det_label; with coords it should format as D0@(1,2)."""
+    from emlint.checks import check_sensitivity
+    from emlint.model import ErrorModel
+
+    model = ErrorModel(
+        detectors={0},
+        observables=set(),
+        error_mechanisms=[],
+        detector_coords={0: (1.0, 2.0)},
+    )
+    result = check_sensitivity(model)
+    assert not result.passed
+    assert "D0@(1,2)" in result.counter_example
+
+
+# ---------------------------------------------------------------------------
 # Empty DEM
 # ---------------------------------------------------------------------------
 

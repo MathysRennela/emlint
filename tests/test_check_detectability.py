@@ -70,6 +70,7 @@ def test_single_violation_fails():
 def test_counter_example_contains_probability():
     m = _mech(0.25, detectors=frozenset(), observables=frozenset({0}))
     result = check_detectability(_model(m))
+    assert result.counter_example is not None
     assert "0.25" in result.counter_example
 
 
@@ -78,6 +79,7 @@ def test_counter_example_multiple_observables_sorted():
     m = _mech(0.1, detectors=frozenset(), observables=frozenset({3, 1}))
     result = check_detectability(_model(m))
     ce = result.counter_example
+    assert ce is not None
     assert "L1" in ce and "L3" in ce
     assert ce.index("L1") < ce.index("L3")
 
@@ -116,3 +118,50 @@ def test_mechanism_with_no_detectors_and_observables_always_fails(obs, p):
     """A mechanism with non-empty observables and empty detectors is always a violation."""
     m = _mech(p, detectors=frozenset(), observables=obs)
     assert not check_detectability(_model(m)).passed
+
+
+# ---------------------------------------------------------------------------
+# counter_example_data
+# ---------------------------------------------------------------------------
+
+def test_passing_result_has_no_counter_example_data():
+    m = _mech(0.2, detectors=frozenset({0}), observables=frozenset({0}))
+    result = check_detectability(_model(m))
+    assert result.counter_example_data is None
+
+
+def test_failing_result_has_counter_example_data():
+    m = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
+    result = check_detectability(_model(m))
+    assert result.counter_example_data is not None
+
+
+def test_counter_example_data_has_mechanisms_key():
+    m = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
+    result = check_detectability(_model(m))
+    assert "mechanisms" in result.counter_example_data
+
+
+def test_counter_example_data_mechanisms_is_list_of_strings():
+    m = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
+    result = check_detectability(_model(m))
+    data = result.counter_example_data
+    assert isinstance(data["mechanisms"], list)
+    assert all(isinstance(s, str) for s in data["mechanisms"])
+
+
+def test_counter_example_data_contains_all_violations():
+    m0 = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
+    m1 = _mech(0.2, detectors=frozenset(), observables=frozenset({1}))
+    result = check_detectability(_model(m0, m1))
+    assert len(result.counter_example_data["mechanisms"]) == 2
+
+
+def test_counter_example_data_mechanism_string_format():
+    m = _mech(0.25, detectors=frozenset(), observables=frozenset({0}))
+    result = check_detectability(_model(m))
+    mech_strs = result.counter_example_data["mechanisms"]
+    assert len(mech_strs) == 1
+    assert mech_strs[0].startswith("error(0.25)")
+    assert "L0" in mech_strs[0]
+

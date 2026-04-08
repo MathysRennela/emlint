@@ -38,6 +38,11 @@ def test_p_half_passes():
     result = check_probability_bounds(_model(_mech(0.5)))
     assert result.passed
 
+def test_p_just_below_half_passes():
+    """p just below 0.5 is valid — boundary is closed from below."""
+    result = check_probability_bounds(_model(_mech(0.5 - 1e-10)))
+    assert result.passed
+
 def test_p_typical_passes():
     result = check_probability_bounds(_model(_mech(0.1)))
     assert result.passed
@@ -79,6 +84,73 @@ def test_p_high_fails():
 def test_p_nan_fails():
     result = check_probability_bounds(_model(_mech(float("nan"))))
     assert not result.passed
+
+def test_p_inf_fails():
+    result = check_probability_bounds(_model(_mech(float("inf"))))
+    assert not result.passed
+
+def test_p_neg_inf_fails():
+    result = check_probability_bounds(_model(_mech(float("-inf"))))
+    assert not result.passed
+
+# ---------------------------------------------------------------------------
+# Severity discrimination: unphysical (NaN / inf / ≤0) → error; p > 0.5 → warning
+# ---------------------------------------------------------------------------
+
+def test_p_above_half_has_warning_severity():
+    """p > 0.5 is anomalous but not unphysical — must be warning, not error."""
+    result = check_probability_bounds(_model(_mech(0.9)))
+    assert not result.passed
+    assert result.severity == "warning"
+
+def test_p_zero_has_error_severity():
+    result = check_probability_bounds(_model(_mech(0.0)))
+    assert not result.passed
+    assert result.severity == "error"
+
+def test_p_negative_has_error_severity():
+    result = check_probability_bounds(_model(_mech(-0.1)))
+    assert not result.passed
+    assert result.severity == "error"
+
+def test_p_nan_has_error_severity():
+    result = check_probability_bounds(_model(_mech(float("nan"))))
+    assert not result.passed
+    assert result.severity == "error"
+
+def test_p_inf_has_error_severity():
+    result = check_probability_bounds(_model(_mech(float("inf"))))
+    assert not result.passed
+    assert result.severity == "error"
+
+def test_mixed_unphysical_and_above_half_has_error_severity():
+    """If NaN and > 0.5 violations co-exist, severity must be error (not warning)."""
+    mechs = [_mech(float("nan")), _mech(0.9)]
+    result = check_probability_bounds(_model(*mechs))
+    assert not result.passed
+    assert result.severity == "error"
+
+# ---------------------------------------------------------------------------
+# Counter-example content
+# ---------------------------------------------------------------------------
+
+def test_counter_example_not_none_on_failure():
+    result = check_probability_bounds(_model(_mech(0.0)))
+    assert result.counter_example is not None
+
+def test_counter_example_contains_probability_value():
+    """The counter-example string must include the offending probability."""
+    result = check_probability_bounds(_model(_mech(0.9)))
+    assert result.counter_example is not None
+    assert "0.9" in result.counter_example
+
+def test_counter_example_includes_detector_indices():
+    """When the violating mechanism references detectors, they appear in the counter-example."""
+    m = _mech(0.0, detectors=frozenset({3, 7}))
+    result = check_probability_bounds(_model(m))
+    assert result.counter_example is not None
+    assert "D3" in result.counter_example
+    assert "D7" in result.counter_example
 
 # ---------------------------------------------------------------------------
 # Mixed violations: all four categories together
@@ -128,3 +200,51 @@ def test_p_above_half_always_fails(p):
     assume(p > 0.5)  # guard against floating-point edge that equals 0.5
     result = check_probability_bounds(_model(_mech(p)))
     assert not result.passed
+
+
+# ---------------------------------------------------------------------------
+# counter_example_data
+# ---------------------------------------------------------------------------
+
+def test_passing_result_has_no_counter_example_data():
+    result = check_probability_bounds(_model(_mech(0.1)))
+    assert result.counter_example_data is None
+
+
+def test_failing_result_has_counter_example_data():
+    result = check_probability_bounds(_model(_mech(0.0)))
+    assert result.counter_example_data is not None
+
+
+def test_counter_example_data_has_probability_and_mechanism_keys():
+    result = check_probability_bounds(_model(_mech(0.0)))
+    data = result.counter_example_data
+    assert "probability" in data
+    assert "mechanism" in data
+
+
+def test_counter_example_data_probability_matches_first_violation():
+    result = check_probability_bounds(_model(_mech(0.0)))
+    assert result.counter_example_data["probability"] == 0.0
+
+
+def test_counter_example_data_mechanism_is_string():
+    result = check_probability_bounds(_model(_mech(0.9)))
+    assert isinstance(result.counter_example_data["mechanism"], str)
+
+
+def test_counter_example_data_mechanism_string_contains_probability():
+    result = check_probability_bounds(_model(_mech(0.9, detectors=frozenset({2}))))
+    s = result.counter_example_data["mechanism"]
+    assert "0.9" in s
+    assert "D2" in s
+
+
+def test_counter_example_data_reflects_first_violation_when_multiple():
+    m0 = _mech(0.0, detectors=frozenset({0}))
+    m1 = _mech(0.9, detectors=frozenset({1}))
+    result = check_probability_bounds(_model(m0, m1))
+    # the first violation is p=0 on D0
+    assert result.counter_example_data["probability"] == 0.0
+    assert "D0" in result.counter_example_data["mechanism"]
+

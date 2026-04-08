@@ -18,11 +18,15 @@ def from_stim_dem(dem: stim.DetectorErrorModel) -> ErrorModel:
     detector_coords: dict[int, tuple[float, ...]] = {}
 
     for instruction in dem.flattened():
+        if not isinstance(instruction, stim.DemInstruction):
+            continue
         if instruction.type == "error":
             prob = instruction.args_copy()[0]
             det_targets: list[int] = []
             obs_targets: list[int] = []
             for t in instruction.targets_copy():
+                if not isinstance(t, stim.DemTarget):
+                    continue
                 if t.is_relative_detector_id():
                     det_targets.append(t.val)
                     detectors.add(t.val)
@@ -38,6 +42,8 @@ def from_stim_dem(dem: stim.DetectorErrorModel) -> ErrorModel:
         elif instruction.type == "detector":
             coords = tuple(float(v) for v in instruction.args_copy())
             for t in instruction.targets_copy():
+                if not isinstance(t, stim.DemTarget):
+                    continue
                 if t.is_relative_detector_id():
                     detectors.add(t.val)
                     if coords:

@@ -165,3 +165,46 @@ def test_declared_detector_not_in_any_mechanism_always_fails(d, p):
     )
     assert not check_sensitivity(model).passed
 
+
+# ---------------------------------------------------------------------------
+# counter_example_data
+# ---------------------------------------------------------------------------
+
+def test_passing_result_has_no_counter_example_data():
+    m = _mech(0.1, detectors=frozenset({0}))
+    result = check_sensitivity(_model(m))
+    assert result.counter_example_data is None
+
+
+def test_failing_result_has_counter_example_data():
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    result = check_sensitivity(model)
+    assert result.counter_example_data is not None
+
+
+def test_counter_example_data_has_detectors_key():
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    result = check_sensitivity(model)
+    assert "detectors" in result.counter_example_data
+
+
+def test_counter_example_data_detectors_is_list_of_ints():
+    model = ErrorModel(detectors={3, 7}, observables=set(), error_mechanisms=[])
+    result = check_sensitivity(model)
+    data = result.counter_example_data
+    assert isinstance(data["detectors"], list)
+    assert all(isinstance(d, int) for d in data["detectors"])
+
+
+def test_counter_example_data_contains_all_dead_detectors():
+    model = ErrorModel(detectors={3, 7}, observables=set(), error_mechanisms=[])
+    result = check_sensitivity(model)
+    assert set(result.counter_example_data["detectors"]) == {3, 7}
+
+
+def test_counter_example_data_excludes_covered_detectors():
+    m = _mech(0.1, detectors=frozenset({0}))
+    model = ErrorModel(detectors={0, 1}, observables=set(), error_mechanisms=[m])
+    result = check_sensitivity(model)
+    assert result.counter_example_data["detectors"] == [1]
+

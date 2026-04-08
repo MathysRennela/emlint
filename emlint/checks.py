@@ -53,12 +53,20 @@ def check_detectability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prope
         counter = "; ".join(lines)
         if len(violations) > max_shown:
             counter += f" (and {len(violations) - max_shown} more)"
+        def _mech_str(mech) -> str:
+            targets = " ".join(
+                [f"D{d}" for d in sorted(mech.detectors)]
+                + [f"L{o}" for o in sorted(mech.observables)]
+            )
+            return f"error({mech.probability})" + (f" {targets}" if targets else "")
+
         return PropertyResult(
             name="detectability",
             passed=False,
             severity="error",
             message=f"Found {len(violations)} undetectable error mechanism(s) that flip observable(s).",
             counter_example=counter,
+            counter_example_data={"mechanisms": [_mech_str(m) for m in violations]},
         )
 
     return PropertyResult(
@@ -97,6 +105,7 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
             severity="warning",
             message=f"{len(dead)} detector(s) are never triggered by any error mechanism.",
             counter_example=counter,
+            counter_example_data={"detectors": dead},
         )
 
     return PropertyResult(
@@ -140,6 +149,7 @@ def check_observable_coverage(model: ErrorModel, max_shown: int = _MAX_SHOWN) ->
                 f"outcome for these observables, masking real logical errors entirely."
             ),
             counter_example=counter,
+            counter_example_data={"observables": uncovered},
         )
 
     return PropertyResult(
@@ -199,12 +209,19 @@ def check_probability_bounds(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> 
         if len(violations) > max_shown:
             counter += f" (and {len(violations) - max_shown} more)"
         parts = [f"{n} with {tag}" for tag, n in tag_counts.items()]
+        first_v = violations[0]
+        first_targets = " ".join(
+            [f"D{d}" for d in sorted(first_v.detectors)]
+            + [f"L{o}" for o in sorted(first_v.observables)]
+        )
+        first_mech_str = f"error({first_v.probability})" + (f" {first_targets}" if first_targets else "")
         return PropertyResult(
             name="probability_bounds",
             passed=False,
             severity="error" if has_unphysical else "warning",
             message=f"Found {len(violations)} error mechanism(s) with out-of-range probability ({', '.join(parts)}).",
             counter_example=counter,
+            counter_example_data={"probability": first_v.probability, "mechanism": first_mech_str},
         )
 
     return PropertyResult(
@@ -236,7 +253,7 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     if duplicates:
         lines = []
         for (dets, obs), probs in list(duplicates.items())[:max_shown]:
-            targets = " ".join(_det_label(d, model.detector_coords) for d in sorted(dets))
+            targets = " ".join(_det_label(d, model.detector_coords) for d in sorted(dets)) or "(no detectors)"
             obs_str = (" " + " ".join(f"L{o}" for o in sorted(obs))) if obs else ""
             p_fused = _xor_fold(probs)
             prob_list = ", ".join(str(p) for p in probs)
@@ -247,6 +264,12 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         counter = "; ".join(lines)
         if len(duplicates) > max_shown:
             counter += f" (and {len(duplicates) - max_shown} more)"
+        all_dup_mechs: list[str] = []
+        for (dets, obs), probs in duplicates.items():
+            tgt = " ".join([f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)])
+            tgt_str = f" {tgt}" if tgt else ""
+            for p in probs:
+                all_dup_mechs.append(f"error({p}){tgt_str}")
         return PropertyResult(
             name="duplicates",
             passed=False,
@@ -260,6 +283,7 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
                 f"not left as separate entries."
             ),
             counter_example=counter,
+            counter_example_data={"mechanisms": all_dup_mechs},
         )
 
     return PropertyResult(
@@ -271,22 +295,26 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
 
 
 def check_correctability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> PropertyResult:
-    """Verify that no two distinct mechanisms share the same detector syndrome
-    but differ in the observables they flip.
+    """Verify that every detector syndrome maps to at most one observable set.
 
     A decoder that receives a syndrome must infer a unique logical correction.
-    If two mechanisms produce the same syndrome yet flip different observables,
-    any decoder is forced to guess between them and will fail on at least one
-    of the two faults.
+    If two mechanisms produce the same syndrome yet flip *different* sets of
+    observables, any decoder is forced to guess between them and will fail on
+    at least one of the two faults.
 
     Property: ∀m, m' ∈ mechanisms, det(m) = det(m') → obs(m) = obs(m')
               equivalently: the map det(m) ↦ obs(m) is well-defined (functional)
               on the image of the syndrome map.
 
+    Relationship to check_duplicates: mechanisms that share a full
+    (detectors, observables) signature — i.e. duplicates — contribute only one
+    observable set to a syndrome and are therefore not flagged here. Use
+    check_duplicates to detect them.
+
     Scope: this check examines each mechanism independently. It does not detect
-    cases where two *distinct* mechanisms, when they co-occur, produce a combined
-    syndrome that maps to conflicting observable corrections — that is the code
-    distance problem and is in general NP-hard to verify.
+    cases where two mechanisms, when they co-occur, produce a combined syndrome
+    that maps to conflicting observable corrections — that is the code distance
+    problem and is in general NP-hard to verify.
 
     Known false-positive sources:
       - decompose_errors=True: stim decomposes high-weight errors into pairs of
@@ -323,6 +351,8 @@ def check_correctability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prop
         counter = "; ".join(lines)
         if len(conflicts) > max_shown:
             counter += f" (and {len(conflicts) - max_shown} more)"
+        first_dets = next(iter(conflicts))
+        first_obs_set = conflicts[first_dets]
         return PropertyResult(
             name="correctability",
             passed=False,
@@ -336,6 +366,10 @@ def check_correctability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prop
                 f"ambiguities."
             ),
             counter_example=counter,
+            counter_example_data={
+                "syndrome": sorted(first_dets),
+                "observable_sets": [sorted(obs) for obs in sorted(first_obs_set, key=lambda s: sorted(s))],
+            },
         )
 
     return PropertyResult(
