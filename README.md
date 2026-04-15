@@ -1,17 +1,15 @@
 # emlint
 
-[![CI](https://github.com/MathysRennela/dem-linter/actions/workflows/emlint.yml/badge.svg)](https://github.com/MathysRennela/dem-linter/actions/workflows/emlint.yml)
 [![PyPI](https://img.shields.io/pypi/v/emlint)](https://pypi.org/project/emlint/)
 
 **stim simulates. sinter samples. emlint verifies.**
 
-emlint is a static linter for Detector Error Models (DEMs). A DEM describes
-a circuit's noise as a list of *error mechanisms* — independent faults, each
-with a probability and a syndrome footprint: which detectors it fires and which
-logical observables it flips. It catches structural bugs in milliseconds — before
-you run a single shot.
+emlint is a static linter for Detector Error Models (DEMs). It catches structural bugs in milliseconds — before you run a single shot.
 
 ## The problem
+
+A DEM describes a circuit's noise as a list of *error mechanisms* — independent faults, each with a probability and a syndrome footprint: which detectors it fires and which
+logical observables it flips. A detector is a linear combination of syndrome measurement outcomes that detects when a specific error has occurred.
 
 A `DETECTOR` instruction omitted in round 2 of a circuit leaves detector D1
 wired to nothing. The decoder silently miscorrects. The logical error rate
@@ -130,38 +128,32 @@ or detector at fault.
 
 ## Formal grounding
 
-The checks are grounded in the linear-algebra framework for detector error models
-developed in arXiv:2407.13826. The central object is the **detector error matrix**
-H ∈ 𝔽₂^{d×e}:
+The checks are formal properties of a detector error model, expressed in terms of error mechanisms, detectors, and observables:
 
-> **Definition** (Detector error matrix). H is a binary matrix with d rows
-> (one per detector) and e columns (one per error mechanism). H_{i,j} = 1 if
-> detector i is violated by error j.
+- **mechanisms**: independent physical faults, each with a probability and a signature (which detectors it triggers, which observables it flips).
+- **detectors**: the set of detector indices in the model.
+- **observables**: the set of logical observable indices being protected.
 
-The six checks are properties of H and the accompanying observable map L ∈ 𝔽₂^{k×e}:
+The six checks verify these properties:
 
-| Check | Formal condition |
+| Check | Formal property |
 |---|---|
-| `detectability` | ∃j : obs(j) ≠ ∅ ∧ H[:,j] = **0** |
-| `sensitivity` | ∃i : H[i,:] = **0** |
-| `correctability` | ∃j≠k : H[:,j] = H[:,k] ∧ obs(j) ≠ obs(k) |
-| `duplicates` | ∃j≠k : H[:,j] = H[:,k] ∧ obs(j) = obs(k) |
-| `observable_coverage` | ∃l : L[l,:] = **0** |
-| `probability_bounds` | ∃j : p_j ∉ (0, 0.5] |
-
-The paper also establishes that a DEM contains all information necessary to
-verify fault-tolerance properties at the gadget, schedule, and circuit levels —
-the theoretical basis for emlint's "no original circuit required" promise.
+| `detectability` | ∀m ∈ mechanisms, obs(m) ≠ ∅ → det(m) ≠ ∅ |
+| `sensitivity` | detectors ⊆ ⋃ₘ det(m) |
+| `observable_coverage` | observables ⊆ ⋃ₘ obs(m) |
+| `probability_bounds` | ∀m ∈ mechanisms, 0 < p(m) ≤ 0.5 and p(m) ∉ {NaN, ±∞} |
+| `duplicates` | ∀m ≠ m′, (det(m), obs(m)) ≠ (det(m′), obs(m′)) |
+| `correctability` | ∀m, m′, det(m) = det(m′) → obs(m) = obs(m′) |
 
 ## Connecting a failed check to the circuit bug
 
 When a check fails, the counter-example tells you *where* in the DEM the problem
-is. The table below tells you *what* circuit-level mistake most likely produced it
+is. Each subsection below tells you *what* circuit-level mistake most likely produced it
 and where to look in your circuit source.
 
 ### `detectability` fails
 
-> `error(0.001) L0 — flips observable but triggers 0 detectors`
+> `error(0.001) flips L0 but triggers 0 detectors`
 
 The listed mechanism flips a logical observable but no detector fires — the
 decoder has no syndrome signal to correct it.
@@ -180,7 +172,7 @@ extraction round ends with a `DETECTOR` pointing at the right ancilla measuremen
 
 ### `sensitivity` fails
 
-> `D17@(1,0,2) not triggered by any error mechanism`
+> `Detector(s) not triggered by any error mechanism: D17@(1,0,2)`
 
 The listed detector is declared but no error mechanism ever fires it.
 
@@ -201,7 +193,7 @@ the noise model includes errors on those CNOTs.
 
 ### `observable_coverage` fails
 
-> `L1 not flipped by any error mechanism`
+> `Observable(s) not flipped by any error mechanism: L1`
 
 The listed logical observable is declared but no physical error can flip it.
 
