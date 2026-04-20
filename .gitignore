@@ -1,0 +1,17 @@
+.pypirc
+build/*
+dist/*
+*.egg-info
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.bak
+*.swp
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+poetry.lock
