@@ -1,6 +1,8 @@
 # emlint
 
-![emlint logo](docs/images/emlint_logo_with_name.png)
+<div align="center">
+  <img src="docs/images/emlint_logo_with_name.png" alt="emlint logo" width="350">
+</div>
 
 [![PyPI](https://img.shields.io/pypi/v/emlint)](https://pypi.org/project/emlint/)
 
