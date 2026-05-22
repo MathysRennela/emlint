@@ -3,6 +3,7 @@
 All tests invoke main() in-process with sys.argv patched so that
 pytest-cov instruments every branch inside main().
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -20,7 +21,7 @@ from emlint.cli import _build_parser, main
 # ---------------------------------------------------------------------------
 
 PASSING_DEM = "error(0.1) D0 L0\ndetector D0\n"
-ERROR_DEM   = "error(0.1) L0\n"          # detectability violation (no detectors)
+ERROR_DEM = "error(0.1) L0\n"  # detectability violation (no detectors)
 WARNING_DEM = "error(0.1) D0 L0\nerror(0.1) D0 L0\ndetector D0\n"  # duplicate (warning)
 
 
@@ -39,7 +40,10 @@ def _run(args: list[str]) -> _Result:
     sys.argv = ["emlint"] + args
     returncode = 0
     try:
-        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+        with (
+            contextlib.redirect_stdout(stdout_buf),
+            contextlib.redirect_stderr(stderr_buf),
+        ):
             main()
     except SystemExit as exc:
         returncode = exc.code if isinstance(exc.code, int) else 0
@@ -52,6 +56,7 @@ def _run(args: list[str]) -> _Result:
 # --version
 # ---------------------------------------------------------------------------
 
+
 def test_version_flag():
     with pytest.raises(SystemExit) as exc:
         _build_parser().parse_args(["--version"])
@@ -61,6 +66,7 @@ def test_version_flag():
 # ---------------------------------------------------------------------------
 # Exit codes
 # ---------------------------------------------------------------------------
+
 
 def test_exit_0_on_all_checks_pass(tmp_path):
     dem_file = tmp_path / "ok.dem"
@@ -86,6 +92,7 @@ def test_exit_2_on_warning_only_failure(tmp_path):
 # ---------------------------------------------------------------------------
 # Output format
 # ---------------------------------------------------------------------------
+
 
 def test_text_format_is_default(tmp_path):
     dem_file = tmp_path / "ok.dem"
@@ -114,10 +121,20 @@ def test_json_format_all_passed_field(tmp_path):
 # --check filter
 # ---------------------------------------------------------------------------
 
+
 def test_check_flag_restricts_results(tmp_path):
     dem_file = tmp_path / "ok.dem"
     dem_file.write_text(PASSING_DEM)
-    result = _run(["check", str(dem_file), "--format", "json", "--check", "detectability,sensitivity"])
+    result = _run(
+        [
+            "check",
+            str(dem_file),
+            "--format",
+            "json",
+            "--check",
+            "detectability,sensitivity",
+        ]
+    )
     data = json.loads(result.stdout)
     names = {r["name"] for r in data["results"]}
     assert names == {"detectability", "sensitivity"}
@@ -134,6 +151,7 @@ def test_check_flag_unknown_name_exits_nonzero(tmp_path):
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
+
 
 def test_nonexistent_file_does_not_traceback():
     result = _run(["check", "/nonexistent/path/circuit.dem"])
@@ -154,6 +172,7 @@ def test_raw_dem_string_input():
 # ---------------------------------------------------------------------------
 # --severity filter
 # ---------------------------------------------------------------------------
+
 
 def test_severity_error_suppresses_warnings(tmp_path):
     """--severity error hides warning-severity results from output."""
@@ -180,6 +199,8 @@ def test_severity_warning_is_default(tmp_path):
     dem_file.write_text(WARNING_DEM)
     result = _run(["check", str(dem_file), "--format", "json"])
     data = json.loads(result.stdout)
-    warning_results = [r for r in data["results"] if not r["passed"] and r["severity"] == "warning"]
+    warning_results = [
+        r for r in data["results"] if not r["passed"] and r["severity"] == "warning"
+    ]
     assert len(warning_results) > 0
     assert result.returncode == 2

@@ -3,9 +3,11 @@
 These tests exercise the real stim dependency end-to-end and are therefore
 separated from the unit tests.  They require a working stim installation.
 """
+
 from __future__ import annotations
 
 import textwrap
+from typing import Any, cast
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,10 @@ from emlint.report import Report
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_dem(task: str, distance: int = 3, rounds: int = 3, decompose: bool = False) -> stim.DetectorErrorModel:
+
+def _make_dem(
+    task: str, distance: int = 3, rounds: int = 3, decompose: bool = False
+) -> stim.DetectorErrorModel:
     circuit = stim.Circuit.generated(
         task,
         rounds=rounds,
@@ -34,12 +39,15 @@ def _make_dem(task: str, distance: int = 3, rounds: int = 3, decompose: bool = F
 # String input
 # ---------------------------------------------------------------------------
 
+
 def test_raw_dem_string_input():
     """emlint.check() should accept a raw DEM string."""
-    dem_str = textwrap.dedent("""\
+    dem_str = textwrap.dedent(
+        """\
         error(0.1) D0 L0
         detector D0
-    """)
+    """
+    )
     report = emlint.check(dem_str)
     assert isinstance(report, Report)
     # D0 is covered and L0 is covered — detectability, sensitivity pass
@@ -53,12 +61,15 @@ def test_raw_dem_string_input():
 # File input
 # ---------------------------------------------------------------------------
 
+
 def test_file_path_input(tmp_path: Path):
     """emlint.check() should accept a pathlib.Path to a .dem file."""
-    dem_str = textwrap.dedent("""\
+    dem_str = textwrap.dedent(
+        """\
         error(0.1) D0 L0
         detector D0
-    """)
+    """
+    )
     dem_file = tmp_path / "test.dem"
     dem_file.write_text(dem_str)
     report = emlint.check(dem_file)
@@ -67,10 +78,12 @@ def test_file_path_input(tmp_path: Path):
 
 def test_string_file_path_input(tmp_path: Path):
     """emlint.check() should accept a str path to a .dem file."""
-    dem_str = textwrap.dedent("""\
+    dem_str = textwrap.dedent(
+        """\
         error(0.1) D0 L0
         detector D0
-    """)
+    """
+    )
     dem_file = tmp_path / "test.dem"
     dem_file.write_text(dem_str)
     report = emlint.check(str(dem_file))
@@ -103,6 +116,7 @@ def test_invalid_raw_dem_string_raises_value_error():
 # Pathological DEMs
 # ---------------------------------------------------------------------------
 
+
 def test_empty_dem_passes_all_checks():
     """An empty DEM (no mechanisms, no detectors, no observables) must pass everything."""
     report = emlint.check(stim.DetectorErrorModel())
@@ -119,11 +133,15 @@ def test_detectability_violation_detected():
 
 def test_correctability_violation_detected():
     """The same syndrome pointing at two different observable sets must fail correctability."""
-    dem = stim.DetectorErrorModel(textwrap.dedent("""\
+    dem = stim.DetectorErrorModel(
+        textwrap.dedent(
+            """\
         error(0.1) D0 L0
         error(0.1) D0 L1
         detector D0
-    """))
+    """
+        )
+    )
     report = emlint.check(dem)
     correctability = next(r for r in report.results if r.name == "correctability")
     assert not correctability.passed
@@ -132,11 +150,15 @@ def test_correctability_violation_detected():
 def test_sensitivity_violation_detected():
     """A declared detector with no mechanism referencing it must fail sensitivity."""
     # detector D1 is declared but no error mechanism fires it
-    dem = stim.DetectorErrorModel(textwrap.dedent("""\
+    dem = stim.DetectorErrorModel(
+        textwrap.dedent(
+            """\
         error(0.1) D0 L0
         detector D0
         detector D1
-    """))
+    """
+        )
+    )
     report = emlint.check(dem)
     sensitivity = next(r for r in report.results if r.name == "sensitivity")
     assert not sensitivity.passed
@@ -154,10 +176,14 @@ def test_observable_coverage_violation_detected():
 
 def test_probability_bounds_violation_detected():
     """p=0 must fail probability_bounds."""
-    dem = stim.DetectorErrorModel(textwrap.dedent("""\
+    dem = stim.DetectorErrorModel(
+        textwrap.dedent(
+            """\
         error(0) D0
         detector D0
-    """))
+    """
+        )
+    )
     report = emlint.check(dem)
     bounds = next(r for r in report.results if r.name == "probability_bounds")
     assert not bounds.passed
@@ -165,11 +191,15 @@ def test_probability_bounds_violation_detected():
 
 def test_duplicates_violation_detected():
     """The same mechanism listed twice must fail duplicates."""
-    dem = stim.DetectorErrorModel(textwrap.dedent("""\
+    dem = stim.DetectorErrorModel(
+        textwrap.dedent(
+            """\
         error(0.1) D0 L0
         error(0.2) D0 L0
         detector D0
-    """))
+    """
+        )
+    )
     report = emlint.check(dem)
     dups = next(r for r in report.results if r.name == "duplicates")
     assert not dups.passed
@@ -179,9 +209,10 @@ def test_duplicates_violation_detected():
 # Error handling
 # ---------------------------------------------------------------------------
 
+
 def test_invalid_source_type_raises_type_error():
     with pytest.raises(TypeError):
-        emlint.check(12345)  # type: ignore[arg-type]
+        emlint.check(cast(Any, 12345))
 
 
 # ---------------------------------------------------------------------------
@@ -227,43 +258,58 @@ def test_invalid_source_type_raises_type_error():
 # Using distance as part of the key prevents masking distance-specific regressions
 # (e.g. rotated_memory_z only emits `duplicates` at d=7, not d=3/d=5).
 _EXPECTED_WARNINGS: dict[tuple[str, int, bool], set[str]] = {
-    ("surface_code:rotated_memory_z",    3, False): set(),
-    ("surface_code:rotated_memory_z",    5, False): set(),
-    ("surface_code:rotated_memory_z",    7, False): {"duplicates"},
-    ("surface_code:rotated_memory_z",    3, True):  {"duplicates", "correctability"},
-    ("surface_code:rotated_memory_z",    5, True):  {"duplicates", "correctability"},
-    ("surface_code:rotated_memory_z",    7, True):  {"duplicates", "correctability"},
-    ("surface_code:rotated_memory_x",    3, False): set(),
-    ("surface_code:rotated_memory_x",    3, True):  {"duplicates", "correctability"},
-    ("surface_code:unrotated_memory_x",  3, False): set(),
-    ("surface_code:unrotated_memory_x",  3, True):  {"duplicates", "correctability"},
-    ("surface_code:unrotated_memory_z",  3, False): set(),
-    ("surface_code:unrotated_memory_z",  3, True):  {"duplicates", "correctability"},
-    ("repetition_code:memory",           3, False): {"duplicates"},
-    ("repetition_code:memory",           5, False): {"duplicates"},
-    ("repetition_code:memory",           7, False): {"duplicates"},
-    ("repetition_code:memory",           3, True):  {"duplicates", "correctability"},
-    ("repetition_code:memory",           5, True):  {"duplicates", "correctability"},
-    ("repetition_code:memory",           7, True):  {"duplicates", "correctability"},
-    ("color_code:memory_xyz",            3, False): {"correctability"},
-    ("color_code:memory_xyz",            3, True):  {"duplicates", "correctability"},
+    ("surface_code:rotated_memory_z", 3, False): set(),
+    ("surface_code:rotated_memory_z", 5, False): set(),
+    ("surface_code:rotated_memory_z", 7, False): {"duplicates"},
+    ("surface_code:rotated_memory_z", 3, True): {"duplicates"},
+    ("surface_code:rotated_memory_z", 5, True): {"duplicates"},
+    ("surface_code:rotated_memory_z", 7, True): {"duplicates"},
+    ("surface_code:rotated_memory_x", 3, False): set(),
+    ("surface_code:rotated_memory_x", 3, True): {"duplicates"},
+    ("surface_code:unrotated_memory_x", 3, False): set(),
+    ("surface_code:unrotated_memory_x", 3, True): {"duplicates"},
+    ("surface_code:unrotated_memory_z", 3, False): set(),
+    ("surface_code:unrotated_memory_z", 3, True): {"duplicates"},
+    ("repetition_code:memory", 3, False): {"duplicates"},
+    ("repetition_code:memory", 5, False): {"duplicates"},
+    ("repetition_code:memory", 7, False): {"duplicates"},
+    ("repetition_code:memory", 3, True): {"duplicates"},
+    ("repetition_code:memory", 5, True): {"duplicates"},
+    ("repetition_code:memory", 7, True): {"duplicates"},
+    ("color_code:memory_xyz", 3, False): set(),
+    ("color_code:memory_xyz", 3, True): {"duplicates"},
+}
+
+# Known error-severity violations that are genuine code properties, not linter bugs.
+_EXPECTED_ERRORS: dict[tuple[str, int, bool], set[str]] = {
+    # The colour-code DEM is genuinely degenerate: some syndromes map to more
+    # than one distinct observable set.  This is a known property of the code,
+    # not an artefact of the linter.
+    ("color_code:memory_xyz", 3, False): {"correctability"},
+    ("color_code:memory_xyz", 3, True): {"correctability"},
 }
 
 _AUDIT_CASES = [
-    pytest.param(task, d, r, decompose, id=f"{task.split(':')[1]}_d{d}_r{r}_decomp{int(decompose)}")
+    pytest.param(
+        task,
+        d,
+        r,
+        decompose,
+        id=f"{task.split(':')[1]}_d{d}_r{r}_decomp{int(decompose)}",
+    )
     for task, d, r in [
-        ("surface_code:rotated_memory_z",   3,  3),
-        ("surface_code:rotated_memory_z",   5,  5),
-        ("surface_code:rotated_memory_z",   7,  7),
+        ("surface_code:rotated_memory_z", 3, 3),
+        ("surface_code:rotated_memory_z", 5, 5),
+        ("surface_code:rotated_memory_z", 7, 7),
         # High-rounds case: catches temporal duplicates that only emerge at depth.
-        ("surface_code:rotated_memory_z",   7, 20),
-        ("surface_code:rotated_memory_x",   3,  3),
-        ("surface_code:unrotated_memory_x", 3,  3),
-        ("surface_code:unrotated_memory_z", 3,  3),
-        ("repetition_code:memory",          3,  5),
-        ("repetition_code:memory",          5,  5),
-        ("repetition_code:memory",          7,  7),
-        ("color_code:memory_xyz",           3,  3),
+        ("surface_code:rotated_memory_z", 7, 20),
+        ("surface_code:rotated_memory_x", 3, 3),
+        ("surface_code:unrotated_memory_x", 3, 3),
+        ("surface_code:unrotated_memory_z", 3, 3),
+        ("repetition_code:memory", 3, 5),
+        ("repetition_code:memory", 5, 5),
+        ("repetition_code:memory", 7, 7),
+        ("color_code:memory_xyz", 3, 3),
     ]
     for decompose in (False, True)
 ]
@@ -280,18 +326,84 @@ def test_false_positive_audit(task, distance, rounds, decompose):
     dem = _make_dem(task, distance, rounds, decompose=decompose)
     report = emlint.check(dem)
 
-    # --- Hard rule: zero error-severity failures on any well-formed DEM ----------
-    error_failures = [r for r in report.results if not r.passed and r.severity == "error"]
+    # --- Hard rule: no unexpected error-severity failures -------------------------
+    expected_errors = _EXPECTED_ERRORS.get((task, distance, decompose), set())
+    error_failures = [
+        r for r in report.results
+        if not r.passed and r.severity == "error" and r.name not in expected_errors
+    ]
     assert error_failures == [], (
         f"[{task} d={distance} decompose={decompose}] unexpected error-severity failures: "
         f"{[r.name for r in error_failures]}"
     )
+    actual_errors = {r.name for r in report.results if not r.passed and r.severity == "error"}
+    assert actual_errors == expected_errors, (
+        f"[{task} d={distance} decompose={decompose}] error profile mismatch — "
+        f"got {actual_errors}, expected {expected_errors}. "
+        f"Update _EXPECTED_ERRORS if the change is intentional."
+    )
 
     # --- Soft rule: warning profile matches the known-good inventory -------------
-    actual_warnings = {r.name for r in report.results if not r.passed and r.severity == "warning"}
+    actual_warnings = {
+        r.name for r in report.results if not r.passed and r.severity == "warning"
+    }
     expected_warnings = _EXPECTED_WARNINGS.get((task, distance, decompose), set())
     assert actual_warnings == expected_warnings, (
         f"[{task} d={distance} decompose={decompose}] warning mismatch — "
         f"got {actual_warnings}, expected {expected_warnings}. "
         f"Update _EXPECTED_WARNINGS if the change is intentional."
     )
+
+
+# ---------------------------------------------------------------------------
+# Simultaneous multi-check violations
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_checks_fail_simultaneously():
+    """A model with several independent bugs causes multiple checks to fail at once.
+
+    error(0.1) L0  — flips L0 with no detectors  → detectability violation
+    error(0.1) L1  — flips L1 with no detectors  → detectability violation
+                     both share the empty syndrome but map to different observable
+                     sets ({L0} vs {L1})          → correctability violation
+    detector D0    — declared but never triggered → sensitivity violation
+
+    Expected failures: detectability, sensitivity, correctability.
+    Expected passes:   duplicates, probability_bounds, observable_coverage
+                       (L0 and L1 are each flipped by one mechanism, so coverage holds).
+    """
+    dem = stim.DetectorErrorModel(
+        textwrap.dedent(
+            """\
+        error(0.1) L0
+        error(0.1) L1
+        detector D0
+    """
+        )
+    )
+    report = emlint.check(dem)
+    failed = {r.name for r in report.results if not r.passed}
+
+    assert "detectability" in failed
+    assert "sensitivity" in failed
+    assert "correctability" in failed
+    assert "duplicates" not in failed
+    assert "probability_bounds" not in failed
+    assert "observable_coverage" not in failed
+
+
+# ---------------------------------------------------------------------------
+# decompose_errors=True: XOR fix for observable cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_correctability_passes_on_decomposed_surface_code():
+    """check_correctability must not fire false positives when the DEM was generated
+    with decompose_errors=True.  Stim's ^ notation collapses observables via XOR;
+    the parser must fold them correctly so that artifical syndrome collisions
+    (where L0 appears in both components of a ^ pair) are eliminated."""
+    dem = _make_dem("surface_code:rotated_memory_z", distance=3, rounds=3, decompose=True)
+    report = emlint.check(dem)
+    correctability = next(r for r in report.results if r.name == "correctability")
+    assert correctability.passed

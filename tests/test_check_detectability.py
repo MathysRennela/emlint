@@ -4,6 +4,7 @@ check_detectability flags every error mechanism that flips at least one
 observable while triggering zero detectors — those represent undetectable
 logical errors.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -13,12 +14,13 @@ import hypothesis.strategies as st
 
 from emlint.checks import _MAX_SHOWN, check_detectability
 from emlint.model import ErrorModel
-from helpers import _mech, _model
+from helpers import _mech, _model, assert_failed
 
 
 # ---------------------------------------------------------------------------
 # Passing cases
 # ---------------------------------------------------------------------------
+
 
 def test_empty_model_passes():
     model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=[])
@@ -60,6 +62,7 @@ def test_passing_result_has_no_counter_example():
 # Failing cases
 # ---------------------------------------------------------------------------
 
+
 def test_single_violation_fails():
     m = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
     result = check_detectability(_model(m))
@@ -87,6 +90,7 @@ def test_counter_example_multiple_observables_sorted():
 # ---------------------------------------------------------------------------
 # Hypothesis: property-based tests
 # ---------------------------------------------------------------------------
+
 
 @given(
     dets=st.frozensets(st.integers(0, 10), min_size=1),
@@ -124,6 +128,7 @@ def test_mechanism_with_no_detectors_and_observables_always_fails(obs, p):
 # counter_example_data
 # ---------------------------------------------------------------------------
 
+
 def test_passing_result_has_no_counter_example_data():
     m = _mech(0.2, detectors=frozenset({0}), observables=frozenset({0}))
     result = check_detectability(_model(m))
@@ -138,13 +143,13 @@ def test_failing_result_has_counter_example_data():
 
 def test_counter_example_data_has_mechanisms_key():
     m = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
-    result = check_detectability(_model(m))
+    result = assert_failed(check_detectability(_model(m)))
     assert "mechanisms" in result.counter_example_data
 
 
 def test_counter_example_data_mechanisms_is_list_of_strings():
     m = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
-    result = check_detectability(_model(m))
+    result = assert_failed(check_detectability(_model(m)))
     data = result.counter_example_data
     assert isinstance(data["mechanisms"], list)
     assert all(isinstance(s, str) for s in data["mechanisms"])
@@ -153,15 +158,41 @@ def test_counter_example_data_mechanisms_is_list_of_strings():
 def test_counter_example_data_contains_all_violations():
     m0 = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
     m1 = _mech(0.2, detectors=frozenset(), observables=frozenset({1}))
-    result = check_detectability(_model(m0, m1))
+    result = assert_failed(check_detectability(_model(m0, m1)))
     assert len(result.counter_example_data["mechanisms"]) == 2
 
 
 def test_counter_example_data_mechanism_string_format():
     m = _mech(0.25, detectors=frozenset(), observables=frozenset({0}))
-    result = check_detectability(_model(m))
+    result = assert_failed(check_detectability(_model(m)))
     mech_strs = result.counter_example_data["mechanisms"]
     assert len(mech_strs) == 1
     assert mech_strs[0].startswith("error(0.25)")
     assert "L0" in mech_strs[0]
 
+
+# ---------------------------------------------------------------------------
+# from_stim_dem round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_undetectable_error_from_stim_dem_fails():
+    """Parse a real DEM string via from_stim_dem and confirm detectability catches it."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel("error(0.1) L0")
+    model = from_stim_dem(dem)
+    result = assert_failed(check_detectability(model))
+    assert not result.passed
+    assert "L0" in result.counter_example
+
+
+def test_detectable_error_from_stim_dem_passes():
+    """A mechanism that fires a detector passes detectability after parsing."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel("error(0.1) D0 L0\ndetector D0")
+    model = from_stim_dem(dem)
+    assert check_detectability(model).passed

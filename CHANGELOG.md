@@ -6,6 +6,37 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.2] — 2026-05-22
+
+### Added
+
+- **Tree model** (`model.py`): new `RepeatBlock(body, count)` frozen dataclass
+  represents `REPEAT` blocks as first-class nodes in the error mechanism list.
+  `ErrorModel.error_mechanisms` now holds `ErrorMechanism | RepeatBlock` nodes.
+- **`ErrorModel.flattened()`**: iterator that lazily expands `RepeatBlock` nodes;
+  all built-in checks call `.flattened()` internally and are unaffected by the
+  structural change.
+- **Decomposition-aware `correctability`**: the frontend now parses
+  `^`-separated components in `error(p) A ^ B` instructions to record
+  decomposition provenance (which sub-mechanisms belong to the same original
+  hyperedge).
+
+### Changed
+
+- More compact implementation of checks from v0.1.0, with a defensive copy of
+  `ErrorModel` to prevent accidental mutation of shared instances across checks.
+- Fixed minor bug in `_det_label`: coordinate lookup now uses `is not None`
+  instead of truthiness, correctly handling detectors at origin `(0, 0, 0)`.
+- `check_correctability` severity promoted from `warning` to `error`; the
+  `decompose_errors=True` false-positive caveat documented in v0.1.0 no longer
+  applies.
+- Explicit error handling in CLI.
+- Broader [stim](https://github.com/quantumlib/Stim) integration coverage.
+- Updated `from_stim_dem` to emit `RepeatBlock` nodes rather than calling
+  `dem.flattened()` eagerly.
+
+---
+
 ## [0.1.1] — 2026-04-08
 
 ### Changed
@@ -88,5 +119,6 @@ None. This is the initial release.
 
 ---
 
-[0.1.1]: https://github.com/MathysRennela/dem-linter/releases/tag/v0.1.1
-[0.1.0]: https://github.com/MathysRennela/dem-linter/releases/tag/v0.1.0
+[0.1.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.2
+[0.1.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.1
+[0.1.0]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.0

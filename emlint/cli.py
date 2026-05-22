@@ -1,14 +1,15 @@
 """Command-line interface for emlint."""
+
 from __future__ import annotations
 
 import argparse
 import importlib.metadata
 import sys
-from pathlib import Path
 
 import emlint
 from emlint.checks import ALL_CHECKS
 from emlint.report import format_json, format_text
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -46,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["error", "warning"],
         default="warning",
         help="Minimum severity to report (default: warning). "
-             "Use 'error' to suppress warnings and only surface error-severity findings.",
+        "Use 'error' to suppress warnings and only surface error-severity findings.",
     )
     return parser
 
@@ -84,6 +85,7 @@ def main() -> None:
     # based on the full report so that error-severity failures are never silently dropped.
     if args.severity == "error":
         from emlint.report import Report as _Report
+
         display_report = _Report(
             results=[r for r in report.results if r.severity == "error"],
             num_detectors=report.num_detectors,

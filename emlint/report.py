@@ -5,8 +5,6 @@ import json
 from dataclasses import dataclass
 from typing import Callable, Literal
 
-from emlint.model import ErrorModel
-
 
 @dataclass
 class PropertyResult:
@@ -51,7 +49,8 @@ def format_text(report: Report) -> str:
     ]
     for r in report.results:
         icon = "✓" if r.passed else "✗"
-        lines.append(f"  {icon} {r.name}: {r.message}")
+        severity_tag = f" [{r.severity}]" if not r.passed else ""
+        lines.append(f"  {icon}{severity_tag} {r.name}: {r.message}")
         if r.counter_example:
             lines.append(f"      Counter-example: {r.counter_example}")
     return "\n".join(lines)

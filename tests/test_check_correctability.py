@@ -10,6 +10,7 @@ The check must NOT flag:
   - syndromes that appear with only one distinct observable set, regardless of
     how many mechanisms produce them
 """
+
 from __future__ import annotations
 
 import pytest
@@ -19,19 +20,20 @@ import hypothesis.strategies as st
 
 from emlint.checks import _MAX_SHOWN, check_correctability
 from emlint.model import ErrorModel
-from helpers import _mech, _model
+from helpers import _mech, _model, assert_failed
 
 
 # ---------------------------------------------------------------------------
 # Passing cases
 # ---------------------------------------------------------------------------
 
+
 def test_empty_model_passes():
     model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=[])
     result = check_correctability(model)
     assert result.passed
     assert result.name == "correctability"
-    assert result.severity == "warning"
+    assert result.severity == "error"
     assert result.counter_example is None
 
 
@@ -59,7 +61,10 @@ def test_same_syndrome_same_observables_passes():
 
 
 def test_same_syndrome_same_observables_three_copies_passes():
-    mechs = [_mech(0.05, detectors=frozenset({0}), observables=frozenset({0})) for _ in range(3)]
+    mechs = [
+        _mech(0.05, detectors=frozenset({0}), observables=frozenset({0}))
+        for _ in range(3)
+    ]
     result = check_correctability(_model(*mechs))
     assert result.passed
 
@@ -81,13 +86,14 @@ def test_passing_result_has_no_counter_example():
 # Failing cases
 # ---------------------------------------------------------------------------
 
+
 def test_same_syndrome_different_observables_fails():
     """Core case: D0→L0 and D0→L1 share syndrome {D0} but flip different observables."""
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
     assert not result.passed
-    assert result.severity == "warning"
+    assert result.severity == "error"
 
 
 def test_same_syndrome_one_with_no_observable_fails():
@@ -103,30 +109,26 @@ def test_result_name_and_severity_on_failure():
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
     assert result.name == "correctability"
-    assert result.severity == "warning"
+    assert result.severity == "error"
 
 
 def test_failure_counter_example_not_none():
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
-    assert result.counter_example is not None
+    assert_failed(check_correctability(_model(m0, m1)))
 
 
 def test_counter_example_contains_detector_label():
     m0 = _mech(0.1, detectors=frozenset({3}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({3}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
-    assert result.counter_example is not None
+    result = assert_failed(check_correctability(_model(m0, m1)))
     assert "D3" in result.counter_example
 
 
 def test_counter_example_contains_both_observable_sets():
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
-    ce = result.counter_example
-    assert ce is not None
+    ce = assert_failed(check_correctability(_model(m0, m1))).counter_example
     assert "L0" in ce and "L1" in ce
 
 
@@ -134,7 +136,7 @@ def test_message_contains_conflict_count():
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
-    assert "1" in result.message
+    assert "Found 1 " in result.message
 
 
 def test_two_independent_conflicts_counted():
@@ -158,12 +160,13 @@ def test_clean_syndrome_not_polluting_conflict_count():
     m2 = _mech(0.1, detectors=frozenset({2}), observables=frozenset({2}))  # clean
     result = check_correctability(_model(m0, m1, m2))
     assert not result.passed
-    assert "1" in result.message
+    assert "Found 1 " in result.message
 
 
 # ---------------------------------------------------------------------------
 # Truncation
 # ---------------------------------------------------------------------------
+
 
 def test_truncation_message_when_many_conflicts():
     """More than _MAX_SHOWN conflicting syndromes should mention the overflow count."""
@@ -173,15 +176,15 @@ def test_truncation_message_when_many_conflicts():
         # Each pair shares detector {i} but has different observables
         mechs.append(_mech(0.1, detectors=frozenset({i}), observables=frozenset({0})))
         mechs.append(_mech(0.1, detectors=frozenset({i}), observables=frozenset({1})))
-    result = check_correctability(_model(*mechs))
+    result = assert_failed(check_correctability(_model(*mechs)))
     assert not result.passed
-    assert result.counter_example is not None
     assert "more" in result.counter_example
 
 
 # ---------------------------------------------------------------------------
 # Hypothesis: property-based tests
 # ---------------------------------------------------------------------------
+
 
 @given(
     dets=st.frozensets(st.integers(0, 10)),
@@ -223,6 +226,7 @@ def test_n_identical_mechanisms_always_passes(dets, obs, p, n):
 # counter_example_data
 # ---------------------------------------------------------------------------
 
+
 def test_passing_result_has_no_counter_example_data():
     m = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     result = check_correctability(_model(m))
@@ -236,20 +240,29 @@ def test_failing_result_has_counter_example_data():
     assert result.counter_example_data is not None
 
 
-def test_counter_example_data_has_syndrome_and_observable_sets_keys():
+def test_counter_example_data_has_conflicts_key():
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
+    result = assert_failed(check_correctability(_model(m0, m1)))
     data = result.counter_example_data
-    assert "syndrome" in data
-    assert "observable_sets" in data
+    assert "conflicts" in data
+
+
+def test_counter_example_data_conflicts_is_list_of_dicts():
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
+    result = assert_failed(check_correctability(_model(m0, m1)))
+    conflicts = result.counter_example_data["conflicts"]
+    assert isinstance(conflicts, list)
+    assert all(isinstance(c, dict) for c in conflicts)
+    assert all("syndrome" in c and "observable_sets" in c for c in conflicts)
 
 
 def test_counter_example_data_syndrome_is_sorted_list_of_ints():
     m0 = _mech(0.1, detectors=frozenset({3, 7}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({3, 7}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
-    syndrome = result.counter_example_data["syndrome"]
+    result = assert_failed(check_correctability(_model(m0, m1)))
+    syndrome = result.counter_example_data["conflicts"][0]["syndrome"]
     assert isinstance(syndrome, list)
     assert all(isinstance(d, int) for d in syndrome)
     assert syndrome == sorted(syndrome)
@@ -259,8 +272,8 @@ def test_counter_example_data_syndrome_is_sorted_list_of_ints():
 def test_counter_example_data_observable_sets_is_list_of_lists():
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
-    obs_sets = result.counter_example_data["observable_sets"]
+    result = assert_failed(check_correctability(_model(m0, m1)))
+    obs_sets = result.counter_example_data["conflicts"][0]["observable_sets"]
     assert isinstance(obs_sets, list)
     assert all(isinstance(s, list) for s in obs_sets)
 
@@ -268,21 +281,128 @@ def test_counter_example_data_observable_sets_is_list_of_lists():
 def test_counter_example_data_observable_sets_contains_both_conflicting_sets():
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
-    result = check_correctability(_model(m0, m1))
-    obs_sets = result.counter_example_data["observable_sets"]
+    result = assert_failed(check_correctability(_model(m0, m1)))
+    obs_sets = result.counter_example_data["conflicts"][0]["observable_sets"]
     assert [0] in obs_sets
     assert [1] in obs_sets
 
 
-def test_counter_example_data_reflects_first_conflict():
+def test_counter_example_data_contains_all_conflicts():
     # Two conflicts: syndrome {D0} and {D1}
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     m2 = _mech(0.1, detectors=frozenset({1}), observables=frozenset({0}))
     m3 = _mech(0.1, detectors=frozenset({1}), observables=frozenset({2}))
     result = check_correctability(_model(m0, m1, m2, m3))
-    data = result.counter_example_data
-    # syndrome is one specific conflicting syndrome (either {0} or {1})
-    assert len(data["syndrome"]) == 1
-    assert data["syndrome"][0] in {0, 1}
-    assert len(data["observable_sets"]) == 2
+    assert result.counter_example_data is not None
+    conflicts = result.counter_example_data["conflicts"]
+    assert len(conflicts) == 2
+    syndromes = [c["syndrome"] for c in conflicts]
+    assert [0] in syndromes
+    assert [1] in syndromes
+
+
+# ---------------------------------------------------------------------------
+# Detector coordinate labels
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_syndrome_with_coordinates_uses_annotated_label():
+    """When detector_coords is populated, conflicts must show 'Dn@(x,y)' in the counter-example."""
+    m0 = _mech(0.1, detectors=frozenset({4}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({4}), observables=frozenset({1}))
+    model = ErrorModel(
+        detectors={4},
+        observables={0, 1},
+        error_mechanisms=[m0, m1],
+        detector_coords={4: (3.0, 1.0)},
+    )
+    result = assert_failed(check_correctability(model))
+    assert not result.passed
+    assert "D4@(3,1)" in result.counter_example
+
+
+def test_conflicting_syndrome_without_coordinates_uses_plain_label():
+    """Without detector_coords the counter-example must use the plain 'Dn' format."""
+    m0 = _mech(0.1, detectors=frozenset({4}), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset({4}), observables=frozenset({1}))
+    result = assert_failed(check_correctability(_model(m0, m1)))
+    assert not result.passed
+    assert "D4" in result.counter_example
+    assert "@" not in result.counter_example
+
+
+# ---------------------------------------------------------------------------
+# from_stim_dem round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_ambiguous_syndrome_from_stim_dem_fails():
+    """Two mechanisms that share a detector but flip different observables must
+    fail correctability after parsing a real DEM string via from_stim_dem."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel("error(0.1) D0 L0\nerror(0.1) D0 L1\ndetector D0")
+    model = from_stim_dem(dem)
+    result = assert_failed(check_correctability(model))
+    assert not result.passed
+    assert "D0" in result.counter_example
+
+
+def test_unambiguous_dem_from_stim_dem_passes():
+    """Each syndrome maps to exactly one observable set — correctability must pass."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.1) D0 L0\nerror(0.1) D1 L1\ndetector D0\ndetector D1"
+    )
+    model = from_stim_dem(dem)
+    assert check_correctability(model).passed
+
+
+# ---------------------------------------------------------------------------
+# Decomposed DEM (^ component XOR semantics)
+# ---------------------------------------------------------------------------
+
+
+def test_decomposed_observable_cancels_no_conflict():
+    """error(p) D0 L0 ^ D1 L0 has net obs={} because L0 appears in both ^ components
+    (XOR semantics: even occurrences cancel).  Together with a standalone
+    error(q) D0 D1 (obs={}), syndrome {D0,D1} maps to a unique observable set {}.
+    Requires frontends.py to XOR-fold observables across ^ boundaries."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.001) D0 D1\nerror(0.001) D0 L0 ^ D1 L0\ndetector D0\ndetector D1"
+    )
+    model = from_stim_dem(dem)
+    assert check_correctability(model).passed
+
+
+def test_decomposed_observable_survives_odd_count():
+    """error(p) D0 L0 ^ D1: L0 appears once (odd) so net obs={L0}.
+    Only one syndrome→observable mapping — correctability must pass."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.001) D0 L0 ^ D1\ndetector D0\ndetector D1"
+    )
+    model = from_stim_dem(dem)
+    assert check_correctability(model).passed
+
+
+def test_decomposed_three_components_l0_odd_no_conflict():
+    """error(p) D0 L0 ^ D1 L0 ^ D2 L0: L0 appears 3 times (odd) → net {L0}.
+    Single mechanism, no conflict."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.001) D0 L0 ^ D1 L0 ^ D2 L0\ndetector D0\ndetector D1\ndetector D2"
+    )
+    model = from_stim_dem(dem)
+    assert check_correctability(model).passed

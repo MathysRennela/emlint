@@ -1,5 +1,7 @@
 # emlint
 
+![emlint logo](docs/images/emlint_logo_with_name.png)
+
 [![PyPI](https://img.shields.io/pypi/v/emlint)](https://pypi.org/project/emlint/)
 
 **stim simulates. sinter samples. emlint verifies.**
@@ -8,12 +10,12 @@ emlint is a static linter for Detector Error Models (DEMs). It catches structura
 
 ## The problem
 
-A DEM describes a circuit's noise as a list of *error mechanisms* — independent faults, each with a probability and a syndrome footprint: which detectors it fires and which
-logical observables it flips. A detector is a linear combination of syndrome measurement outcomes that detects when a specific error has occurred.
+A DEM describes a circuit's noise as a list of *error mechanisms* — independent faults, each with a probability and a syndrome footprint: which detectors it fires and which logical observables it flips. 
+A detector is a linear combination of syndrome measurement outcomes that detects when a specific error has occurred.
 
 A `DETECTOR` instruction omitted in round 2 of a circuit leaves detector D1
 wired to nothing. The decoder silently miscorrects. The logical error rate
-rises. The bug is invisible until ~10⁶ Sinter shots (≈45 minutes on a
+rises. The bug is invisible until ~10⁶ simulation shots (≈45 minutes on a
 standard laptop).
 
 ```
@@ -120,7 +122,7 @@ jobs:
 | `observable_coverage` | Logical observables never flipped by any error mechanism | error |
 | `probability_bounds` | Error probabilities outside `(0, 0.5]` | error |
 | `duplicates` | Error mechanisms with identical (detector, observable) signatures | warning |
-| `correctability` | Syndromes mapping to multiple distinct observable sets | warning |
+| `correctability` | Syndromes mapping to multiple distinct observable sets | error |
 
 All checks operate on the standalone `.dem` file — no original circuit required.
 Each failing check produces a counter-example pointing to the specific mechanism
@@ -145,7 +147,7 @@ The six checks verify these properties:
 | `duplicates` | ∀m ≠ m′, (det(m), obs(m)) ≠ (det(m′), obs(m′)) |
 | `correctability` | ∀m, m′, det(m) = det(m′) → obs(m) = obs(m′) |
 
-## Connecting a failed check to the circuit bug
+## Tutorial: debugging using emlint
 
 When a check fails, the counter-example tells you *where* in the DEM the problem
 is. Each subsection below tells you *what* circuit-level mistake most likely produced it
@@ -178,7 +180,7 @@ The listed detector is declared but no error mechanism ever fires it.
 
 **What went wrong in the circuit:**
 - The ancilla qubit for this detector is measuring in the wrong Pauli basis
-  (`X` vs `Z` mismatch), so the errors that *should* flip it pass through silently.
+  (`X` vs `Z` mismatch), so the errors that should flip it pass through silently.
 - The detector's coordinates point to the wrong spatial position — the qubit index
   in `DETECTOR rec[…]` is off by one.
 - A syndrome round was accidentally removed from the circuit, leaving its detector
@@ -267,9 +269,6 @@ observables — the decoder cannot determine the correct logical correction.
 - Two physically distinct errors (e.g. an X error on qubit A and a Z error on
   qubit B) produce the same syndrome but flip different logical observables. This
   is a genuine code distance problem: the code cannot distinguish them.
-- The DEM was generated with `decompose_errors=True`, which breaks hyperedge
-  mechanisms into sub-mechanisms that can create artificial syndrome collisions
-  (use `--severity error` to suppress this known artefact in CI).
 - A degenerate code family (colour codes) has syndromes that legitimately map to
   multiple valid logical corrections — this is an expected property, not a bug.
 
@@ -283,32 +282,10 @@ basis and the same round, this is likely a genuine distance-1 path. If they
 are in different bases or rounds, look for a missing stabilizer measurement
 or a mis-wired CNOT that merges two logically distinct fault paths.
 
-**Scope note:** this check examines each mechanism *individually*. It does not
+**Be careful:** this check examines each mechanism individually. It does not
 detect cases where two *co-occurring* faults combine to produce a syndrome that
 maps to conflicting corrections — that is the code distance problem and is not
-checked here. A future version will address multi-fault correctability via
-compositional reasoning (pre/post-conditions on circuit segments).
-
-## Known false positives
-
-**`correctability` with `decompose_errors=True`**
-
-When a DEM is generated with `stim`'s `decompose_errors=True`, the hyperedge
-decomposition can create sub-mechanism pairs that share the same detector set
-but differ in observables — a syndrome collision that does not exist in the
-original hyperedge model. The check fires at `warning` severity.
-
-*Mitigation:* use `--severity error` in CI, or pass `decompose_errors=False`
-to get a clean `correctability` result with no artefacts.
-
-**`duplicates` at boundaries in degenerate code families**
-
-Degenerate fault paths (e.g. X and Y errors at a repetition code boundary that
-produce the same syndrome and flip the same observable) are correctly flagged as
-duplicates. The warning is accurate — the XOR-fused probability is shown — but
-may not require user action in degenerate code families.
-
-*Mitigation:* use `--severity error` in CI to suppress.
+checked here.
 
 ## References
 

@@ -1,8 +1,10 @@
 """Tests for emlint.report: format_text, format_json, and _xor_fold."""
+
 from __future__ import annotations
 
 import json
 import math
+from typing import Literal
 
 import pytest
 from hypothesis import given
@@ -16,21 +18,36 @@ from emlint.report import PropertyResult, Report, format_json, format_text
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _passed(name: str = "completeness", severity: str = "error") -> PropertyResult:
+
+def _passed(
+    name: str = "completeness", severity: Literal["error", "warning"] = "error"
+) -> PropertyResult:
     return PropertyResult(name=name, passed=True, severity=severity, message="ok")
 
 
-def _failed(name: str = "completeness", severity: str = "error", ce: str = "ce") -> PropertyResult:
-    return PropertyResult(name=name, passed=False, severity=severity, message="fail", counter_example=ce)
+def _failed(
+    name: str = "completeness",
+    severity: Literal["error", "warning"] = "error",
+    ce: str = "ce",
+) -> PropertyResult:
+    return PropertyResult(
+        name=name, passed=False, severity=severity, message="fail", counter_example=ce
+    )
 
 
 def _report(*results: PropertyResult) -> Report:
-    return Report(results=list(results), num_detectors=4, num_observables=1, num_error_mechanisms=10)
+    return Report(
+        results=list(results),
+        num_detectors=4,
+        num_observables=1,
+        num_error_mechanisms=10,
+    )
 
 
 # ---------------------------------------------------------------------------
 # _xor_fold
 # ---------------------------------------------------------------------------
+
 
 def test_xor_fold_empty():
     assert _xor_fold([]) == 0.0
@@ -78,10 +95,11 @@ def test_xor_fold_commutative(p, q):
 # format_text
 # ---------------------------------------------------------------------------
 
+
 def test_format_text_contains_counts():
     text = format_text(_report(_passed()))
-    assert "4" in text   # num_detectors
-    assert "1" in text   # num_observables
+    assert "4" in text  # num_detectors
+    assert "1" in text  # num_observables
     assert "10" in text  # num_error_mechanisms
 
 
@@ -113,9 +131,26 @@ def test_format_text_multiple_results():
     assert "sensitivity" in text
 
 
+def test_format_text_failed_error_has_error_tag():
+    text = format_text(_report(_failed("completeness", severity="error")))
+    assert "[error]" in text
+
+
+def test_format_text_failed_warning_has_warning_tag():
+    text = format_text(_report(_failed("sensitivity", severity="warning")))
+    assert "[warning]" in text
+
+
+def test_format_text_passed_has_no_severity_tag():
+    text = format_text(_report(_passed("completeness", severity="error")))
+    assert "[error]" not in text
+    assert "[warning]" not in text
+
+
 # ---------------------------------------------------------------------------
 # format_json
 # ---------------------------------------------------------------------------
+
 
 def test_format_json_is_valid_json():
     output = format_json(_report(_passed()))
@@ -160,7 +195,9 @@ def test_format_json_counter_example_present_when_failed():
 
 
 def test_format_json_all_passed_true_when_all_pass():
-    data = json.loads(format_json(_report(_passed(), _passed("sensitivity", "warning"))))
+    data = json.loads(
+        format_json(_report(_passed(), _passed("sensitivity", "warning")))
+    )
     assert data["all_passed"] is True
 
 
@@ -182,6 +219,7 @@ def test_format_json_has_errors_true_for_error_severity():
 # ---------------------------------------------------------------------------
 # Report.all_passed / has_errors / has_warnings — direct unit tests
 # ---------------------------------------------------------------------------
+
 
 def test_all_passed_true_when_empty():
     assert _report().all_passed()

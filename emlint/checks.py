@@ -11,7 +11,7 @@ _MAX_SHOWN = 10  # max counter-examples shown in truncated lists
 def _det_label(d: int, coords: dict[int, tuple[float, ...]]) -> str:
     """Format a detector as 'D17@(1,0,2)' when coordinates are available, else 'D17'."""
     c = coords.get(d)
-    if c:
+    if c is not None:
         coord_str = ",".join(f"{v:g}" for v in c)
         return f"D{d}@({coord_str})"
     return f"D{d}"
@@ -30,7 +30,16 @@ def _xor_fold(probs: list[float]) -> float:
     return p
 
 
-def check_detectability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> PropertyResult:
+def _format_mech(mech) -> str:
+    """Format a mechanism as 'error(p) D1 D2 L1'."""
+    targets = [f"D{d}" for d in sorted(mech.detectors)] + [f"L{o}" for o in sorted(mech.observables)]
+    suffix = (" " + " ".join(targets)) if targets else ""
+    return f"error({mech.probability}){suffix}"
+
+
+def check_detectability(
+    model: ErrorModel, max_shown: int = _MAX_SHOWN
+) -> PropertyResult:
     """Verify every error mechanism that flips observables also triggers detectors.
 
     This check is about *detectability*: a logical error that leaves the syndrome
@@ -41,7 +50,8 @@ def check_detectability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prope
     Property: ∀m ∈ mechanisms, obs(m) ≠ ∅ → det(m) ≠ ∅
     """
     violations = [
-        mech for mech in model.error_mechanisms
+        mech
+        for mech in model.flattened()
         if not mech.detectors and mech.observables
     ]
 
@@ -49,16 +59,12 @@ def check_detectability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prope
         lines = []
         for mech in violations[:max_shown]:
             obs_str = ", ".join(f"L{o}" for o in sorted(mech.observables))
-            lines.append(f"error({mech.probability}) flips {obs_str} but triggers 0 detectors")
+            lines.append(
+                f"error({mech.probability}) flips {obs_str} but triggers 0 detectors"
+            )
         counter = "; ".join(lines)
         if len(violations) > max_shown:
             counter += f" (and {len(violations) - max_shown} more)"
-        def _mech_str(mech) -> str:
-            targets = " ".join(
-                [f"D{d}" for d in sorted(mech.detectors)]
-                + [f"L{o}" for o in sorted(mech.observables)]
-            )
-            return f"error({mech.probability})" + (f" {targets}" if targets else "")
 
         return PropertyResult(
             name="detectability",
@@ -66,7 +72,7 @@ def check_detectability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prope
             severity="error",
             message=f"Found {len(violations)} undetectable error mechanism(s) that flip observable(s).",
             counter_example=counter,
-            counter_example_data={"mechanisms": [_mech_str(m) for m in violations]},
+            counter_example_data={"mechanisms": [_format_mech(m) for m in violations]},
         )
 
     return PropertyResult(
@@ -87,9 +93,7 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
     Property: ∀d ∈ D, ∃m ∈ mechanisms, d ∈ det(m)
               equivalently: D ⊆ ⋃_{m} det(m)
     """
-    participating: set[int] = set()
-    for mech in model.error_mechanisms:
-        participating.update(mech.detectors)
+    participating = {d for mech in model.flattened() for d in mech.detectors}
 
     dead = sorted(model.detectors - participating)
 
@@ -116,7 +120,9 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
     )
 
 
-def check_observable_coverage(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> PropertyResult:
+def check_observable_coverage(
+    model: ErrorModel, max_shown: int = _MAX_SHOWN
+) -> PropertyResult:
     """Verify every declared logical observable is flipped by at least one error mechanism.
 
     An observable that never appears in any mechanism is either perfectly protected
@@ -127,9 +133,7 @@ def check_observable_coverage(model: ErrorModel, max_shown: int = _MAX_SHOWN) ->
     Property: ∀ℓ ∈ O, ∃m ∈ mechanisms, ℓ ∈ obs(m)
               equivalently: O ⊆ ⋃_{m} obs(m)
     """
-    covered: set[int] = set()
-    for mech in model.error_mechanisms:
-        covered.update(mech.observables)
+    covered = {o for mech in model.flattened() for o in mech.observables}
 
     uncovered = sorted(model.observables - covered)
 
@@ -162,18 +166,24 @@ def check_observable_coverage(model: ErrorModel, max_shown: int = _MAX_SHOWN) ->
 
 def _prob_label(p: float) -> tuple[str, str]:
     """Return (summary_tag, counter_example_hint) for an out-of-range probability."""
-    if math.isnan(p):        return "p = NaN", "NaN probability"
-    if not math.isfinite(p): return "p = ±inf", "infinite probability"
-    if p < 0.0:              return "p < 0",    "negative probability"
-    if p == 0.0:             return "p = 0",    "zero probability"
-    return                          "p > 0.5",  "use complementary probability (p → 1−p)"
+    if math.isnan(p):
+        return "p = NaN", "NaN probability"
+    if not math.isfinite(p):
+        return "p = ±inf", "infinite probability"
+    if p < 0.0:
+        return "p < 0", "negative probability"
+    if p == 0.0:
+        return "p = 0", "zero probability"
+    return "p > 0.5", "use complementary probability (p → 1−p)"
 
 
 # Tags that represent unphysical probabilities; p > 0.5 is merely anomalous.
 _UNPHYSICAL_TAGS = {"p = NaN", "p = ±inf", "p < 0", "p = 0"}
 
 
-def check_probability_bounds(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> PropertyResult:
+def check_probability_bounds(
+    model: ErrorModel, max_shown: int = _MAX_SHOWN
+) -> PropertyResult:
     """Verify every error mechanism has a probability in (0, 0.5].
 
     p = 0 is a no-op that should be pruned from the DEM.
@@ -188,7 +198,8 @@ def check_probability_bounds(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> 
     Property: ∀m ∈ mechanisms, 0 < p(m) ≤ 0.5  (and p(m) ∉ {NaN, −∞, +∞})
     """
     violations = [
-        mech for mech in model.error_mechanisms
+        mech
+        for mech in model.flattened()
         if math.isnan(mech.probability) or not (0.0 < mech.probability <= 0.5)
     ]
     if violations:
@@ -202,26 +213,25 @@ def check_probability_bounds(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> 
             if tag in _UNPHYSICAL_TAGS:
                 has_unphysical = True
             if len(lines) < max_shown:
-                target_parts = [f"D{d}" for d in sorted(mech.detectors)] + [f"L{o}" for o in sorted(mech.observables)]
+                target_parts = [f"D{d}" for d in sorted(mech.detectors)] + [
+                    f"L{o}" for o in sorted(mech.observables)
+                ]
                 targets = (" " + " ".join(target_parts)) if target_parts else ""
                 lines.append(f"error({p}){targets} — {hint}")
         counter = "; ".join(lines)
         if len(violations) > max_shown:
             counter += f" (and {len(violations) - max_shown} more)"
         parts = [f"{n} with {tag}" for tag, n in tag_counts.items()]
-        first_v = violations[0]
-        first_targets = " ".join(
-            [f"D{d}" for d in sorted(first_v.detectors)]
-            + [f"L{o}" for o in sorted(first_v.observables)]
-        )
-        first_mech_str = f"error({first_v.probability})" + (f" {first_targets}" if first_targets else "")
+
         return PropertyResult(
             name="probability_bounds",
             passed=False,
             severity="error" if has_unphysical else "warning",
             message=f"Found {len(violations)} error mechanism(s) with out-of-range probability ({', '.join(parts)}).",
             counter_example=counter,
-            counter_example_data={"probability": first_v.probability, "mechanism": first_mech_str},
+            counter_example_data={
+                "mechanisms": [_format_mech(m) for m in violations]
+            },
         )
 
     return PropertyResult(
@@ -243,58 +253,63 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     Property: ∀m, m' ∈ mechanisms, m ≠ m' → (det(m), obs(m)) ≠ (det(m'), obs(m'))
               i.e., the signature map m ↦ (det(m), obs(m)) is injective.
     """
-    seen: dict[tuple[frozenset[int], frozenset[int]], list[float]] = {}
-    for mech in model.error_mechanisms:
-        key = (mech.detectors, mech.observables)
-        seen.setdefault(key, []).append(mech.probability)
+    sig_probs: dict[tuple[frozenset[int], frozenset[int]], list[float]] = {}
+    for mech in model.flattened():
+        sig_probs.setdefault((mech.detectors, mech.observables), []).append(mech.probability)
 
-    duplicates = {k: ps for k, ps in seen.items() if len(ps) > 1}
-    # Injectivity is violated if two distinct mechanisms share the same signature.
-    if duplicates:
-        lines = []
-        for (dets, obs), probs in list(duplicates.items())[:max_shown]:
-            targets = " ".join(_det_label(d, model.detector_coords) for d in sorted(dets)) or "(no detectors)"
-            obs_str = (" " + " ".join(f"L{o}" for o in sorted(obs))) if obs else ""
-            p_fused = _xor_fold(probs)
-            prob_list = ", ".join(str(p) for p in probs)
-            lines.append(
-                f"error({prob_list}) share signature {targets}{obs_str}; "
-                f"XOR-fused probability is {p_fused:.6g}"
-            )
-        counter = "; ".join(lines)
-        if len(duplicates) > max_shown:
-            counter += f" (and {len(duplicates) - max_shown} more)"
-        all_dup_mechs: list[str] = []
-        for (dets, obs), probs in duplicates.items():
-            tgt = " ".join([f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)])
-            tgt_str = f" {tgt}" if tgt else ""
-            for p in probs:
-                all_dup_mechs.append(f"error({p}){tgt_str}")
+    duplicates = {k: probs for k, probs in sig_probs.items() if len(probs) > 1}
+    if not duplicates:
         return PropertyResult(
             name="duplicates",
-            passed=False,
+            passed=True,
             severity="warning",
-            message=(
-                f"Found {len(duplicates)} duplicate mechanism signature(s). "
-                f"The same fault path appears more than once in the DEM, which "
-                f"typically happens when sub-circuit DEMs are concatenated without "
-                f"merging coincident mechanisms. Duplicate probabilities should be "
-                f"XOR-folded as p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), "
-                f"not left as separate entries."
-            ),
-            counter_example=counter,
-            counter_example_data={"mechanisms": all_dup_mechs},
+            message="No duplicate mechanism signatures found.",
         )
-
+    # Injectivity is violated if two distinct mechanisms share the same signature.
+    lines = []
+    for (dets, obs), probs in list(duplicates.items())[:max_shown]:
+        targets = (
+            " ".join(_det_label(d, model.detector_coords) for d in sorted(dets))
+            or "(no detectors)"
+        )
+        obs_str = (" " + " ".join(f"L{o}" for o in sorted(obs))) if obs else ""
+        p_fused = _xor_fold(probs)
+        prob_list = ", ".join(str(p) for p in probs)
+        lines.append(
+            f"error({prob_list}) share signature {targets}{obs_str}; "
+            f"XOR-fused probability is {p_fused:.6g}"
+        )
+    counter = "; ".join(lines)
+    if len(duplicates) > max_shown:
+        counter += f" (and {len(duplicates) - max_shown} more)"
+    all_dup_mechs: list[str] = []
+    for (dets, obs), probs in duplicates.items():
+        tgt = " ".join(
+            [f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)]
+        )
+        tgt_str = f" {tgt}" if tgt else ""
+        for p in probs:
+            all_dup_mechs.append(f"error({p}){tgt_str}")
     return PropertyResult(
         name="duplicates",
-        passed=True,
+        passed=False,
         severity="warning",
-        message="No duplicate mechanism signatures found.",
+        message=(
+            f"Found {len(duplicates)} duplicate mechanism signature(s). "
+            f"The same fault path appears more than once in the DEM, which "
+            f"typically happens when sub-circuit DEMs are concatenated without "
+            f"merging coincident mechanisms. Duplicate probabilities should be "
+            f"XOR-folded as p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), "
+            f"not left as separate entries."
+        ),
+        counter_example=counter,
+        counter_example_data={"mechanisms": all_dup_mechs},
     )
 
 
-def check_correctability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> PropertyResult:
+def check_correctability(
+    model: ErrorModel, max_shown: int = _MAX_SHOWN
+) -> PropertyResult:
     """Verify that every detector syndrome maps to at most one observable set.
 
     A decoder that receives a syndrome must infer a unique logical correction.
@@ -315,67 +330,68 @@ def check_correctability(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Prop
     cases where two mechanisms, when they co-occur, produce a combined syndrome
     that maps to conflicting observable corrections — that is the code distance
     problem and is in general NP-hard to verify.
-
-    Known false-positive sources:
-      - decompose_errors=True: stim decomposes high-weight errors into pairs of
-        low-weight components that share a syndrome but differ in their observable
-        sets; these violations are artefacts of the decomposition, not genuine
-        decoding ambiguities.
-      - Intentionally degenerate codes: codes where multiple fault paths produce
-        the same syndrome but map to the same net logical correction (e.g. via
-        compensating observables) may still trigger this check because it operates
-        on individual mechanisms rather than equivalence classes of corrections.
     """
-    # Map each detector frozenset to the set of observable frozensets seen with it.
-    syndrome_to_obs: dict[frozenset[int], set[frozenset[int]]] = {}
-    for mech in model.error_mechanisms:
-        syndrome_to_obs.setdefault(mech.detectors, set()).add(mech.observables)
-
-    conflicts: dict[frozenset[int], set[frozenset[int]]] = {
-        dets: obs_set
-        for dets, obs_set in syndrome_to_obs.items()
-        if len(obs_set) > 1
-    }
+    # Map each unique syndrome (detector frozenset) to the first observable set
+    # seen for it.  A second dict accumulates conflicts only when a genuine
+    # second, distinct observable set is encountered, avoiding per-mechanism
+    # set allocations for the common non-conflicting case.
+    first_obs: dict[frozenset[int], frozenset[int]] = {}
+    conflicts: dict[frozenset[int], set[frozenset[int]]] = {}
+    for mech in model.flattened():
+        dets = mech.detectors
+        obs = mech.observables
+        existing = first_obs.get(dets)
+        if existing is None:
+            first_obs[dets] = obs
+        elif existing != obs:
+            conflicts.setdefault(dets, {existing}).add(obs)
     # A conflict occurs when a syndrome (detector set) maps to more than one distinct observable set,
     # i.e. there exist at least two mechanisms m and m' such that det(m) = det(m') but obs(m) ≠ obs(m').
     if conflicts:
         lines = []
         for dets, obs_set in list(conflicts.items())[:max_shown]:
-            det_str = " ".join(_det_label(d, model.detector_coords) for d in sorted(dets)) if dets else "(no detectors)"
+            det_str = (
+                " ".join(_det_label(d, model.detector_coords) for d in sorted(dets))
+                if dets
+                else "(no detectors)"
+            )
 
             obs_variants = ", ".join(
                 "{" + " ".join(f"L{o}" for o in sorted(obs)) + "}"
                 for obs in sorted(obs_set, key=lambda s: sorted(s))
             )
-            lines.append(f"syndrome {{{det_str}}} maps to observable sets {obs_variants}")
+            lines.append(
+                f"syndrome {{{det_str}}} maps to observable sets {obs_variants}"
+            )
         counter = "; ".join(lines)
         if len(conflicts) > max_shown:
             counter += f" (and {len(conflicts) - max_shown} more)"
-        first_dets = next(iter(conflicts))
-        first_obs_set = conflicts[first_dets]
+        conflicts_list = [
+            {
+                "syndrome": sorted(dets),
+                "observable_sets": [
+                    sorted(obs) for obs in sorted(obs_set, key=lambda s: sorted(s))
+                ],
+            }
+            for dets, obs_set in conflicts.items()
+        ]
         return PropertyResult(
             name="correctability",
             passed=False,
-            severity="warning",
+            severity="error",
             message=(
                 f"Found {len(conflicts)} syndrome(s) that map to more than one distinct "
                 f"observable set. The decoder cannot determine which logical observable "
-                f"was flipped from the measurement outcome alone. "
-                f"Note: if this DEM was generated with decompose_errors=True, some "
-                f"violations may be artefacts of the decomposition rather than genuine "
-                f"ambiguities."
+                f"was flipped from the measurement outcome alone."
             ),
             counter_example=counter,
-            counter_example_data={
-                "syndrome": sorted(first_dets),
-                "observable_sets": [sorted(obs) for obs in sorted(first_obs_set, key=lambda s: sorted(s))],
-            },
+            counter_example_data={"conflicts": conflicts_list},
         )
 
     return PropertyResult(
         name="correctability",
         passed=True,
-        severity="warning",
+        severity="error",
         message="Every syndrome maps to at most one distinct set of logical observables.",
     )
 

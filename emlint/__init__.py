@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import stim
@@ -9,7 +10,15 @@ from emlint.checks import ALL_CHECKS
 from emlint.model import ErrorModel
 from emlint.report import CheckFn, Report, format_json, format_text
 
-__all__ = ["check", "ErrorModel", "Report", "CheckFn", "ALL_CHECKS", "format_text", "format_json"]
+__all__ = [
+    "check",
+    "ErrorModel",
+    "Report",
+    "CheckFn",
+    "ALL_CHECKS",
+    "format_text",
+    "format_json",
+]
 
 
 def check(
@@ -25,6 +34,21 @@ def check(
         a string path to a ``.dem`` file, or a raw DEM string.
     checks:
         Dict of ``{name: check_fn}`` to run.  Defaults to ``ALL_CHECKS``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *source* is a ``Path`` or a string that resolves to a path that does
+        not exist on the filesystem.
+    PermissionError
+        If *source* is a ``Path`` or file-path string pointing to a file that
+        cannot be read.
+    ValueError
+        If the DEM text (from a file or a raw string) cannot be parsed by
+        ``stim``.
+    TypeError
+        If *source* is not a ``stim.DetectorErrorModel``, ``pathlib.Path``, or
+        ``str``.
 
     Examples
     --------
@@ -65,7 +89,16 @@ def check(
         )
 
     model = frontends.from_stim_dem(dem)
-    results = [fn(model) for fn in checks.values()]
+    results = []
+    for fn in checks.values():
+        model_copy = dataclasses.replace(
+            model,
+            detectors=set(model.detectors),
+            observables=set(model.observables),
+            error_mechanisms=list(model.error_mechanisms),
+            detector_coords=dict(model.detector_coords),
+        )
+        results.append(fn(model_copy))
     return Report(
         results=results,
         num_detectors=len(model.detectors),

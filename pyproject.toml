@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emlint"
-version = "0.1.1"
+version = "0.1.2"
 description = "A static analysis tool for quantum error correction"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Mathys Rennela" },
