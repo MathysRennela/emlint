@@ -16,7 +16,6 @@ from emlint.checks import _MAX_SHOWN, check_detectability
 from emlint.model import ErrorModel
 from helpers import _mech, _model, assert_failed
 
-
 # ---------------------------------------------------------------------------
 # Passing cases
 # ---------------------------------------------------------------------------

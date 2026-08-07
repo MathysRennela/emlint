@@ -13,7 +13,6 @@ from emlint.frontends import from_stim_dem
 from emlint.model import ErrorMechanism
 from helpers import assert_failed
 
-
 # ---------------------------------------------------------------------------
 # Error instruction → ErrorMechanism
 # ---------------------------------------------------------------------------
@@ -124,13 +123,11 @@ def test_observable_declared_but_not_in_any_mechanism():
 
 def test_repeat_block_mechanisms_are_flattened():
     """Repeat blocks are preserved in error_mechanisms; flattened() expands them."""
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         repeat 3 {
             error(0.1) D0
         }
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     # Tree: one RepeatBlock wrapping one ErrorMechanism
     assert len(model.error_mechanisms) == 1
@@ -140,13 +137,11 @@ def test_repeat_block_mechanisms_are_flattened():
 
 def test_repeat_block_detectors_are_flattened():
     """Flattened mechanisms from a repeat block carry the correct detector sets."""
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         repeat 2 {
             error(0.1) D0 D1
         }
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     assert model.flattened()[0].detectors == frozenset({0, 1})
 
@@ -173,6 +168,17 @@ def test_detector_coords_multiple_detectors():
     model = from_stim_dem(dem)
     assert model.detector_coords[0] == (0.0, 0.0)
     assert model.detector_coords[1] == (1.0, 0.0)
+
+
+def test_detector_coords_mixed_dimensions_remain_lintable():
+    """Stim-valid mixed coordinate dimensions must not be rejected by the model."""
+    dem = stim.DetectorErrorModel(
+        "detector(1, 2) D0\ndetector(3, 4, 5) D1\nerror(0.01) D0 D1 L0"
+    )
+    model = from_stim_dem(dem)
+    model._validate_tree()
+    assert model.detector_coords[0] == (1.0, 2.0)
+    assert model.detector_coords[1] == (3.0, 4.0, 5.0)
 
 
 def test_detector_coords_only_annotated_detectors_populated():
@@ -220,13 +226,11 @@ def test_repeat_block_preserved_in_error_mechanisms():
     """Verify that repeat blocks appear as RepeatBlock nodes in error_mechanisms."""
     from emlint.model import RepeatBlock
 
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         repeat 3 {
             error(0.1) D0
         }
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     assert len(model.error_mechanisms) == 1
     assert isinstance(model.error_mechanisms[0], RepeatBlock)
@@ -238,15 +242,13 @@ def test_nested_repeat_blocks_preserved():
     """Verify nested repeat blocks are correctly nested in tree structure."""
     from emlint.model import RepeatBlock
 
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         repeat 2 {
             repeat 3 {
                 error(0.1) D0
             }
         }
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     assert len(model.error_mechanisms) == 1
     outer = model.error_mechanisms[0]
@@ -263,15 +265,13 @@ def test_mixed_errors_and_repeat_blocks():
     """Verify error mechanisms and repeat blocks coexist in error_mechanisms."""
     from emlint.model import RepeatBlock, ErrorMechanism
 
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         error(0.1) D0
         repeat 2 {
             error(0.2) D1
         }
         error(0.3) D2
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     assert len(model.error_mechanisms) == 3
     assert isinstance(model.error_mechanisms[0], ErrorMechanism)
@@ -281,16 +281,14 @@ def test_mixed_errors_and_repeat_blocks():
 
 def test_repeat_block_flattened_preserves_counts():
     """Verify that flattening a tree with repeat blocks multiplies counts correctly."""
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         repeat 2 {
             error(0.1) D0
             repeat 3 {
                 error(0.2) D1
             }
         }
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     flat = model.flattened()
     # Should have: (2 * (1 error + 3 * 1 error)) = 2 * 4 = 8 mechanisms
@@ -299,14 +297,12 @@ def test_repeat_block_flattened_preserves_counts():
 
 def test_detector_collection_with_repeat_blocks():
     """Verify detectors inside repeat blocks are collected in detector set."""
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         repeat 2 {
             error(0.1) D0 D1
         }
         error(0.3) D2
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     # Detectors should be collected from inside repeat blocks
     assert model.detectors == {0, 1, 2}
@@ -314,15 +310,13 @@ def test_detector_collection_with_repeat_blocks():
 
 def test_detector_coords_with_repeat_blocks():
     """Verify detector coordinates are collected even inside repeat blocks."""
-    dem = stim.DetectorErrorModel(
-        """
+    dem = stim.DetectorErrorModel("""
         detector(1, 2) D0
         repeat 2 {
             error(0.1) D0
             detector(3, 4) D1
         }
-    """
-    )
+    """)
     model = from_stim_dem(dem)
     assert model.detector_coords[0] == (1.0, 2.0)
     assert model.detector_coords[1] == (3.0, 4.0)

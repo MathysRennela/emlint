@@ -13,15 +13,13 @@ The check must NOT flag:
 
 from __future__ import annotations
 
-import pytest
-
-from hypothesis import given, settings
+from hypothesis import given
 import hypothesis.strategies as st
 
+import emlint.checks as checks_module
 from emlint.checks import _MAX_SHOWN, check_correctability
 from emlint.model import ErrorModel
 from helpers import _mech, _model, assert_failed
-
 
 # ---------------------------------------------------------------------------
 # Passing cases
@@ -33,7 +31,7 @@ def test_empty_model_passes():
     result = check_correctability(model)
     assert result.passed
     assert result.name == "correctability"
-    assert result.severity == "error"
+    assert result.severity == "warning"
     assert result.counter_example is None
 
 
@@ -93,7 +91,7 @@ def test_same_syndrome_different_observables_fails():
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
     assert not result.passed
-    assert result.severity == "error"
+    assert result.severity == "warning"
 
 
 def test_same_syndrome_one_with_no_observable_fails():
@@ -109,7 +107,7 @@ def test_result_name_and_severity_on_failure():
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
     result = check_correctability(_model(m0, m1))
     assert result.name == "correctability"
-    assert result.severity == "error"
+    assert result.severity == "warning"
 
 
 def test_failure_counter_example_not_none():
@@ -163,6 +161,29 @@ def test_clean_syndrome_not_polluting_conflict_count():
     assert "Found 1 " in result.message
 
 
+def test_empty_syndrome_different_observables_fails():
+    """Empty syndrome (frozenset()) with different observables is a conflict."""
+    m0 = _mech(0.1, detectors=frozenset(), observables=frozenset({0}))
+    m1 = _mech(0.1, detectors=frozenset(), observables=frozenset({1}))
+    result = check_correctability(_model(m0, m1))
+    assert not result.passed
+    assert "Found 1 " in result.message
+
+
+def test_three_distinct_observable_sets_in_conflict():
+    """A syndrome mapping to 3+ distinct observable sets must be flagged."""
+    mechs = [
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({0})),
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({1})),
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({2})),
+    ]
+    result = check_correctability(_model(*mechs))
+    assert not result.passed
+    # All three observable sets should appear in the counter_example
+    ce = assert_failed(result).counter_example
+    assert "L0" in ce and "L1" in ce and "L2" in ce
+
+
 # ---------------------------------------------------------------------------
 # Truncation
 # ---------------------------------------------------------------------------
@@ -179,6 +200,38 @@ def test_truncation_message_when_many_conflicts():
     result = assert_failed(check_correctability(_model(*mechs)))
     assert not result.passed
     assert "more" in result.counter_example
+
+
+def test_provenance_is_indexed_only_for_rendered_conflicts(monkeypatch):
+    """Large conflict sets must not collect provenance for truncated output."""
+    n = _MAX_SHOWN + 3
+    mechs = []
+    for i in range(n):
+        mechs.append(_mech(0.1, detectors=frozenset({i}), observables=frozenset({0})))
+        mechs.append(_mech(0.1, detectors=frozenset({i}), observables=frozenset({1})))
+
+    captured = []
+    original = checks_module._origin_mechanisms
+
+    def capture(model, signatures):
+        captured.append(signatures)
+        return original(model, signatures)
+
+    monkeypatch.setattr(checks_module, "_origin_mechanisms", capture)
+    result = assert_failed(check_correctability(_model(*mechs)))
+
+    assert len(captured) == 1
+    assert captured[0] == {
+        (frozenset({i}), frozenset({observable}))
+        for i in range(_MAX_SHOWN)
+        for observable in (0, 1)
+    }
+    assert len(result.counter_example_data["conflicts"]) == _MAX_SHOWN
+    assert result.counter_example_data["total_conflicts"] == n
+    assert result.counter_example_data["witnesses_truncated"] is True
+    assert all(
+        conflict["witnesses"] for conflict in result.counter_example_data["conflicts"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +340,7 @@ def test_counter_example_data_observable_sets_contains_both_conflicting_sets():
     assert [1] in obs_sets
 
 
-def test_counter_example_data_contains_all_conflicts():
+def test_counter_example_data_contains_rendered_conflicts_and_total_count():
     # Two conflicts: syndrome {D0} and {D1}
     m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset({1}))
@@ -297,6 +350,8 @@ def test_counter_example_data_contains_all_conflicts():
     assert result.counter_example_data is not None
     conflicts = result.counter_example_data["conflicts"]
     assert len(conflicts) == 2
+    assert result.counter_example_data["total_conflicts"] == 2
+    assert result.counter_example_data["witnesses_truncated"] is False
     syndromes = [c["syndrome"] for c in conflicts]
     assert [0] in syndromes
     assert [1] in syndromes
@@ -388,9 +443,7 @@ def test_decomposed_observable_survives_odd_count():
     import stim
     from emlint.frontends import from_stim_dem
 
-    dem = stim.DetectorErrorModel(
-        "error(0.001) D0 L0 ^ D1\ndetector D0\ndetector D1"
-    )
+    dem = stim.DetectorErrorModel("error(0.001) D0 L0 ^ D1\ndetector D0\ndetector D1")
     model = from_stim_dem(dem)
     assert check_correctability(model).passed
 

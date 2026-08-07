@@ -1,11 +1,341 @@
+""" "
+Property checks for detector error models.
+
+All checks must be pure functions that take an ErrorModel and return a PropertyResult.
+They should not raise exceptions.
+Any internal errors should be caught and reported as failed checks with appropriate severity and messaging.
+They must include counter_example and counter_example_data when passed=False.
+"""
+
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from collections import Counter
-from emlint.model import ErrorModel
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+from emlint.model import (
+    ErrorMechanism,
+    ErrorModel,
+    RepeatBlock,
+    _validate_progression_ids,
+    _validate_shifted_ids,
+)
 from emlint.report import CheckFn, PropertyResult
 
 _MAX_SHOWN = 10  # max counter-examples shown in truncated lists
+
+
+@dataclass(frozen=True)
+class _ScopeMechanism:
+    mechanism: ErrorMechanism
+    absolute_start: int
+    detector_stride: int
+    count: int
+
+
+@dataclass(frozen=True)
+class _RepeatTemplate:
+    mechanism: ErrorMechanism
+    absolute_start: int
+    repeat_axes: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class _CrossScopeReduction:
+    signature_states: dict[
+        tuple[frozenset[int], frozenset[int]], tuple[int, float, list[float] | None]
+    ]
+    conflicts: dict[frozenset[int], set[frozenset[int]]]
+
+
+def _reduce_cross_scope_mechanisms(
+    mechanisms: Iterable[ErrorMechanism],
+) -> _CrossScopeReduction:
+    """Reduce mechanisms exactly for both cross-scope predicates."""
+    signature_states: dict[
+        tuple[frozenset[int], frozenset[int]], tuple[int, float, list[float] | None]
+    ] = {}
+    first_observable: dict[frozenset[int], frozenset[int]] = {}
+    conflicts: dict[frozenset[int], set[frozenset[int]]] = {}
+
+    for mechanism in mechanisms:
+        signature = (mechanism.detectors, mechanism.observables)
+        state = signature_states.get(signature)
+        if state is None:
+            signature_states[signature] = (1, mechanism.probability, None)
+        else:
+            count, p_effective, probabilities = state
+            if probabilities is None:
+                probabilities = [p_effective]
+            probabilities.append(mechanism.probability)
+            p_effective = p_effective * (
+                1 - mechanism.probability
+            ) + mechanism.probability * (1 - p_effective)
+            signature_states[signature] = (
+                count + 1,
+                p_effective,
+                probabilities,
+            )
+        existing = first_observable.get(mechanism.detectors)
+        if existing is None:
+            first_observable[mechanism.detectors] = mechanism.observables
+        elif existing != mechanism.observables:
+            conflicts.setdefault(mechanism.detectors, {existing}).add(
+                mechanism.observables
+            )
+
+    return _CrossScopeReduction(signature_states, conflicts)
+
+
+def _shift_mechanism(mechanism: ErrorMechanism, offset: int) -> ErrorMechanism:
+    """Return a mechanism with detector IDs translated by ``offset``."""
+    if offset == 0:
+        return mechanism
+    return ErrorMechanism(
+        probability=mechanism.probability,
+        detectors=frozenset(d + offset for d in mechanism.detectors),
+        observables=mechanism.observables,
+    )
+
+
+def _symbolic_cross_scope_reduction(
+    model: ErrorModel,
+) -> _CrossScopeReduction | None:
+    """Return an exact no-cross-iteration reduction for a narrow repeat shape."""
+    if len(model.error_mechanisms) != 1:
+        return None
+    block = model.error_mechanisms[0]
+    if not isinstance(block, RepeatBlock):
+        return None
+    if block.count == 0:
+        return _CrossScopeReduction({}, {})
+    if block.detector_offset_per_iteration == 0:
+        return None
+    if any(not isinstance(item, ErrorMechanism) for item in block.body):
+        return None
+
+    body = [item for item in block.body if isinstance(item, ErrorMechanism)]
+    if not body:
+        return _CrossScopeReduction({}, {})
+    for item in body:
+        _validate_progression_ids(
+            item.detectors,
+            block.absolute_start_offset,
+            block.detector_offset_per_iteration,
+            block.count,
+            "absolute detector",
+        )
+    if block.count <= 1:
+        return _reduce_cross_scope_mechanisms(
+            _shift_mechanism(item, block.absolute_start_offset) for item in body
+        )
+
+    detector_sets = [item.detectors for item in body]
+    if any(not detectors for detectors in detector_sets):
+        return None
+    min_detector = min(min(detectors) for detectors in detector_sets)
+    max_detector = max(max(detectors) for detectors in detector_sets)
+    body_span = max_detector - min_detector
+    stride = abs(block.detector_offset_per_iteration)
+    max_delta = min(block.count - 1, body_span // stride)
+
+    # Equality between two finite translated detector sets depends only on the
+    # iteration difference. Check every possible difference that can overlap.
+    for delta in range(1, max_delta + 1):
+        offset = delta * block.detector_offset_per_iteration
+        shifted = [_shift_mechanism(item, offset) for item in body]
+        for left in body:
+            for right in shifted:
+                if left.detectors == right.detectors:
+                    return None
+
+    return _reduce_cross_scope_mechanisms(
+        _shift_mechanism(item, block.absolute_start_offset) for item in body
+    )
+
+
+def _cross_scope_reduction(model: ErrorModel) -> _CrossScopeReduction:
+    """Build or reuse one exact streaming reduction for both cross-scope checks."""
+    cached = getattr(model, "_cross_scope_reduction", None)
+    if cached is not None:
+        return cached
+
+    model._validate_tree()
+    reduction = _symbolic_cross_scope_reduction(model)
+    if reduction is None:
+        reduction = _reduce_cross_scope_mechanisms(model.iter_flattened())
+    if hasattr(model, "_cross_scope_reduction"):
+        object.__setattr__(model, "_cross_scope_reduction", reduction)
+    return reduction
+
+
+def _iter_repeat_templates(model: ErrorModel) -> tuple[_RepeatTemplate, ...]:
+    """Return repeat-body templates without expanding repeat counts.
+
+    Each repeat axis is represented as ``(count, detector_stride)``.  The
+    detector IDs of a concrete instance are obtained by adding the template's
+    absolute start and one valid multiple of every axis stride.
+    """
+    cached = getattr(model, "_repeat_templates", None)
+    if cached is not None:
+        return cached
+
+    model._validate_tree()
+    result: list[_RepeatTemplate] = []
+
+    def walk(
+        items: (
+            tuple[ErrorMechanism | RepeatBlock, ...]
+            | list[ErrorMechanism | RepeatBlock]
+        ),
+        scope_start: int,
+        repeat_axes: tuple[tuple[int, int], ...],
+    ) -> None:
+        for item in items:
+            if isinstance(item, ErrorMechanism):
+                min_offset = scope_start + sum(
+                    min(0, (count - 1) * stride) for count, stride in repeat_axes
+                )
+                max_offset = scope_start + sum(
+                    max(0, (count - 1) * stride) for count, stride in repeat_axes
+                )
+                _validate_shifted_ids(item.detectors, min_offset, "absolute detector")
+                _validate_shifted_ids(item.detectors, max_offset, "absolute detector")
+                result.append(_RepeatTemplate(item, scope_start, repeat_axes))
+            elif isinstance(item, RepeatBlock):
+                if item.count == 0:
+                    continue
+                walk(
+                    item.body,
+                    scope_start + item.absolute_start_offset,
+                    repeat_axes + ((item.count, item.detector_offset_per_iteration),),
+                )
+
+    walk(model.error_mechanisms, 0, ())
+    templates = tuple(result)
+    if hasattr(model, "_repeat_templates"):
+        object.__setattr__(model, "_repeat_templates", templates)
+    return templates
+
+
+def _iter_scope_mechanisms(model: ErrorModel) -> list[_ScopeMechanism]:
+    """Return mechanism templates with nested scopes inlined and outer counts intact."""
+    model._validate_tree()
+    result: list[_ScopeMechanism] = []
+
+    def walk(items, scope_start: int, scope_stride: int, scope_count: int) -> None:
+        for item in items:
+            if isinstance(item, ErrorMechanism):
+                _validate_progression_ids(
+                    item.detectors,
+                    scope_start,
+                    scope_stride,
+                    scope_count,
+                    "absolute detector",
+                )
+                result.append(
+                    _ScopeMechanism(item, scope_start, scope_stride, scope_count)
+                )
+            elif isinstance(item, RepeatBlock):
+                if item.count == 0:
+                    continue
+                for k in range(item.count):
+                    walk(
+                        item.body,
+                        scope_start
+                        + item.absolute_start_offset
+                        + k * item.detector_offset_per_iteration,
+                        scope_stride,
+                        scope_count,
+                    )
+
+    for item in model.error_mechanisms:
+        if isinstance(item, ErrorMechanism):
+            result.append(_ScopeMechanism(item, 0, 0, 1))
+        else:
+            if item.count:
+                walk(
+                    item.body,
+                    item.absolute_start_offset,
+                    item.detector_offset_per_iteration,
+                    item.count,
+                )
+    return result
+
+
+def _origin_mechanisms(
+    model: ErrorModel,
+    signatures: set[tuple[frozenset[int], frozenset[int]]],
+) -> dict[
+    tuple[frozenset[int], frozenset[int]], list[tuple[ErrorMechanism, tuple[int, ...]]]
+]:
+    """Index rendered-conflict signatures for concrete failure witnesses.
+
+    The signature filter bounds stored provenance, but traversal still visits
+    expanded repeat iterations. This helper is not repeat-count independent;
+    a future streaming witness index would be a separate optimization.
+    """
+    model._validate_tree()
+    result: dict[
+        tuple[frozenset[int], frozenset[int]],
+        list[tuple[ErrorMechanism, tuple[int, ...]]],
+    ] = {}
+
+    def walk(items, scope_start: int, path: tuple[int, ...]) -> None:
+        for item in items:
+            if isinstance(item, ErrorMechanism):
+                _validate_shifted_ids(item.detectors, scope_start, "absolute detector")
+                if scope_start == 0:
+                    witness = item
+                else:
+                    witness = ErrorMechanism(
+                        item.probability,
+                        frozenset(d + scope_start for d in item.detectors),
+                        item.observables,
+                    )
+                absolute_signature = (witness.detectors, witness.observables)
+                if absolute_signature in signatures:
+                    result.setdefault(absolute_signature, []).append((witness, path))
+            elif isinstance(item, RepeatBlock):
+                for k in range(item.count):
+                    walk(
+                        item.body,
+                        scope_start
+                        + item.absolute_start_offset
+                        + k * item.detector_offset_per_iteration,
+                        path + (k,),
+                    )
+
+    walk(model.error_mechanisms, 0, ())
+    return result
+
+
+def _witness(scope: _ScopeMechanism) -> ErrorMechanism:
+    """Materialize the first absolute mechanism witness for a scope template."""
+    if scope.absolute_start == 0:
+        return scope.mechanism
+    return ErrorMechanism(
+        probability=scope.mechanism.probability,
+        detectors=frozenset(
+            d + scope.absolute_start for d in scope.mechanism.detectors
+        ),
+        observables=scope.mechanism.observables,
+    )
+
+
+def _template_witness(template: _RepeatTemplate) -> ErrorMechanism:
+    """Materialize the first iteration witness for a repeat-body template."""
+    if template.absolute_start == 0:
+        return template.mechanism
+    return ErrorMechanism(
+        probability=template.mechanism.probability,
+        detectors=frozenset(
+            d + template.absolute_start for d in template.mechanism.detectors
+        ),
+        observables=template.mechanism.observables,
+    )
 
 
 def _det_label(d: int, coords: dict[int, tuple[float, ...]]) -> str:
@@ -32,7 +362,9 @@ def _xor_fold(probs: list[float]) -> float:
 
 def _format_mech(mech) -> str:
     """Format a mechanism as 'error(p) D1 D2 L1'."""
-    targets = [f"D{d}" for d in sorted(mech.detectors)] + [f"L{o}" for o in sorted(mech.observables)]
+    targets = [f"D{d}" for d in sorted(mech.detectors)] + [
+        f"L{o}" for o in sorted(mech.observables)
+    ]
     suffix = (" " + " ".join(targets)) if targets else ""
     return f"error({mech.probability}){suffix}"
 
@@ -50,9 +382,9 @@ def check_detectability(
     Property: ∀m ∈ mechanisms, obs(m) ≠ ∅ → det(m) ≠ ∅
     """
     violations = [
-        mech
-        for mech in model.flattened()
-        if not mech.detectors and mech.observables
+        _template_witness(template)
+        for template in _iter_repeat_templates(model)
+        if not template.mechanism.detectors and template.mechanism.observables
     ]
 
     if violations:
@@ -93,9 +425,76 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
     Property: ∀d ∈ D, ∃m ∈ mechanisms, d ∈ det(m)
               equivalently: D ⊆ ⋃_{m} det(m)
     """
-    participating = {d for mech in model.flattened() for d in mech.detectors}
+    intervals: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    participating: set[int] = set()
+    templates = _iter_repeat_templates(model)
+    has_nested_repeats = any(len(template.repeat_axes) > 1 for template in templates)
 
-    dead = sorted(model.detectors - participating)
+    if has_nested_repeats:
+        # The exact progression summary below is for one repeat axis. Keep the
+        # existing expansion path for nested scopes until their multi-axis
+        # membership proof is implemented.
+        scopes = _iter_scope_mechanisms(model)
+        for scope in scopes:
+            for detector in scope.mechanism.detectors:
+                start = detector + scope.absolute_start
+                if scope.count == 1 or scope.detector_stride == 0:
+                    participating.add(start)
+                    continue
+                stride = abs(scope.detector_stride)
+                residue = start % stride
+                end = start + (scope.count - 1) * scope.detector_stride
+                lo, hi = sorted((start, end))
+                intervals.setdefault((stride, residue), []).append((lo, hi))
+    else:
+        for template in templates:
+            for detector in template.mechanism.detectors:
+                start = detector + template.absolute_start
+                if not template.repeat_axes:
+                    participating.add(start)
+                    continue
+                count, detector_stride = template.repeat_axes[0]
+                if count == 1 or detector_stride == 0:
+                    participating.add(start)
+                    continue
+                stride = abs(detector_stride)
+                residue = start % stride
+                end = start + (count - 1) * detector_stride
+                lo, hi = sorted((start, end))
+                intervals.setdefault((stride, residue), []).append((lo, hi))
+
+    merged: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for key, ranges in intervals.items():
+        stride, _ = key
+        for lo, hi in sorted(ranges):
+            if merged.setdefault(key, []) and lo <= merged[key][-1][1] + stride:
+                prev_lo, prev_hi = merged[key][-1]
+                merged[key][-1] = (prev_lo, max(prev_hi, hi))
+            else:
+                merged[key].append((lo, hi))
+
+    indexed_ranges: dict[int, dict[int, tuple[list[int], list[tuple[int, int]]]]] = {}
+    for (stride, residue), ranges in merged.items():
+        indexed_ranges.setdefault(stride, {})[residue] = (
+            [lo for lo, _ in ranges],
+            ranges,
+        )
+
+    def is_participating(detector: int) -> bool:
+        if detector in participating:
+            return True
+        for stride, residue_ranges in indexed_ranges.items():
+            residue = detector % stride
+            indexed = residue_ranges.get(residue)
+            if indexed is None:
+                continue
+            starts, ranges = indexed
+            position = bisect_right(starts, detector) - 1
+            if position >= 0 and ranges[position][1] >= detector:
+                return True
+        return False
+
+    dead = sorted(d for d in model.detectors if not is_participating(d))
 
     if dead:
         counter = "Detector(s) not triggered by any error mechanism: " + ", ".join(
@@ -133,7 +532,11 @@ def check_observable_coverage(
     Property: ∀ℓ ∈ O, ∃m ∈ mechanisms, ℓ ∈ obs(m)
               equivalently: O ⊆ ⋃_{m} obs(m)
     """
-    covered = {o for mech in model.flattened() for o in mech.observables}
+    covered = {
+        observable
+        for template in _iter_repeat_templates(model)
+        for observable in template.mechanism.observables
+    }
 
     uncovered = sorted(model.observables - covered)
 
@@ -198,9 +601,10 @@ def check_probability_bounds(
     Property: ∀m ∈ mechanisms, 0 < p(m) ≤ 0.5  (and p(m) ∉ {NaN, −∞, +∞})
     """
     violations = [
-        mech
-        for mech in model.flattened()
-        if math.isnan(mech.probability) or not (0.0 < mech.probability <= 0.5)
+        _template_witness(template)
+        for template in _iter_repeat_templates(model)
+        if math.isnan(template.mechanism.probability)
+        or not (0.0 < template.mechanism.probability <= 0.5)
     ]
     if violations:
         lines: list[str] = []
@@ -229,9 +633,7 @@ def check_probability_bounds(
             severity="error" if has_unphysical else "warning",
             message=f"Found {len(violations)} error mechanism(s) with out-of-range probability ({', '.join(parts)}).",
             counter_example=counter,
-            counter_example_data={
-                "mechanisms": [_format_mech(m) for m in violations]
-            },
+            counter_example_data={"mechanisms": [_format_mech(m) for m in violations]},
         )
 
     return PropertyResult(
@@ -253,11 +655,11 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     Property: ∀m, m' ∈ mechanisms, m ≠ m' → (det(m), obs(m)) ≠ (det(m'), obs(m'))
               i.e., the signature map m ↦ (det(m), obs(m)) is injective.
     """
-    sig_probs: dict[tuple[frozenset[int], frozenset[int]], list[float]] = {}
-    for mech in model.flattened():
-        sig_probs.setdefault((mech.detectors, mech.observables), []).append(mech.probability)
-
-    duplicates = {k: probs for k, probs in sig_probs.items() if len(probs) > 1}
+    duplicates = {
+        signature: state[2]
+        for signature, state in _cross_scope_reduction(model).signature_states.items()
+        if state[0] > 1 and state[2] is not None
+    }
     if not duplicates:
         return PropertyResult(
             name="duplicates",
@@ -284,9 +686,7 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         counter += f" (and {len(duplicates) - max_shown} more)"
     all_dup_mechs: list[str] = []
     for (dets, obs), probs in duplicates.items():
-        tgt = " ".join(
-            [f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)]
-        )
+        tgt = " ".join([f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)])
         tgt_str = f" {tgt}" if tgt else ""
         for p in probs:
             all_dup_mechs.append(f"error({p}){tgt_str}")
@@ -314,8 +714,9 @@ def check_correctability(
 
     A decoder that receives a syndrome must infer a unique logical correction.
     If two mechanisms produce the same syndrome yet flip *different* sets of
-    observables, any decoder is forced to guess between them and will fail on
-    at least one of the two faults.
+    observables, any decoder may be forced to guess between them. This is a
+    warning because valid degenerate codes and decomposed DEMs can legitimately
+    contain such mappings.
 
     Property: ∀m, m' ∈ mechanisms, det(m) = det(m') → obs(m) = obs(m')
               equivalently: the map det(m) ↦ obs(m) is well-defined (functional)
@@ -331,25 +732,17 @@ def check_correctability(
     that maps to conflicting observable corrections — that is the code distance
     problem and is in general NP-hard to verify.
     """
-    # Map each unique syndrome (detector frozenset) to the first observable set
-    # seen for it.  A second dict accumulates conflicts only when a genuine
-    # second, distinct observable set is encountered, avoiding per-mechanism
-    # set allocations for the common non-conflicting case.
-    first_obs: dict[frozenset[int], frozenset[int]] = {}
-    conflicts: dict[frozenset[int], set[frozenset[int]]] = {}
-    for mech in model.flattened():
-        dets = mech.detectors
-        obs = mech.observables
-        existing = first_obs.get(dets)
-        if existing is None:
-            first_obs[dets] = obs
-        elif existing != obs:
-            conflicts.setdefault(dets, {existing}).add(obs)
+    conflicts = _cross_scope_reduction(model).conflicts
     # A conflict occurs when a syndrome (detector set) maps to more than one distinct observable set,
     # i.e. there exist at least two mechanisms m and m' such that det(m) = det(m') but obs(m) ≠ obs(m').
     if conflicts:
+        shown_conflicts = list(conflicts.items())[:max_shown]
+        signatures = {
+            (dets, obs) for dets, obs_set in shown_conflicts for obs in obs_set
+        }
+        origins = _origin_mechanisms(model, signatures)
         lines = []
-        for dets, obs_set in list(conflicts.items())[:max_shown]:
+        for dets, obs_set in shown_conflicts:
             det_str = (
                 " ".join(_det_label(d, model.detector_coords) for d in sorted(dets))
                 if dets
@@ -360,38 +753,58 @@ def check_correctability(
                 "{" + " ".join(f"L{o}" for o in sorted(obs)) + "}"
                 for obs in sorted(obs_set, key=lambda s: sorted(s))
             )
+            witness_text = ", ".join(
+                f"{_format_mech(mech)} (iteration {path or (0,)})"
+                for obs in sorted(obs_set, key=lambda s: sorted(s))
+                for mech, path in origins.get((dets, obs), [])
+            )
             lines.append(
                 f"syndrome {{{det_str}}} maps to observable sets {obs_variants}"
+                + (f"; witnesses: {witness_text}" if witness_text else "")
             )
         counter = "; ".join(lines)
         if len(conflicts) > max_shown:
             counter += f" (and {len(conflicts) - max_shown} more)"
-        conflicts_list = [
-            {
-                "syndrome": sorted(dets),
-                "observable_sets": [
-                    sorted(obs) for obs in sorted(obs_set, key=lambda s: sorted(s))
-                ],
-            }
-            for dets, obs_set in conflicts.items()
-        ]
+        conflicts_list = []
+        for dets, obs_set in shown_conflicts:
+            witnesses = [
+                {
+                    "mechanism": _format_mech(mech),
+                    "iteration": list(path),
+                }
+                for obs in sorted(obs_set, key=lambda s: sorted(s))
+                for mech, path in origins.get((dets, obs), [])
+            ]
+            conflicts_list.append(
+                {
+                    "syndrome": sorted(dets),
+                    "observable_sets": [
+                        sorted(obs) for obs in sorted(obs_set, key=lambda s: sorted(s))
+                    ],
+                    "witnesses": witnesses,
+                }
+            )
         return PropertyResult(
             name="correctability",
             passed=False,
-            severity="error",
+            severity="warning",
             message=(
                 f"Found {len(conflicts)} syndrome(s) that map to more than one distinct "
                 f"observable set. The decoder cannot determine which logical observable "
                 f"was flipped from the measurement outcome alone."
             ),
             counter_example=counter,
-            counter_example_data={"conflicts": conflicts_list},
+            counter_example_data={
+                "conflicts": conflicts_list,
+                "total_conflicts": len(conflicts),
+                "witnesses_truncated": len(conflicts) > max_shown,
+            },
         )
 
     return PropertyResult(
         name="correctability",
         passed=True,
-        severity="error",
+        severity="warning",
         message="Every syndrome maps to at most one distinct set of logical observables.",
     )
 

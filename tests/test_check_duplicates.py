@@ -23,7 +23,6 @@ from emlint.checks import _MAX_SHOWN, check_duplicates
 from emlint.model import ErrorModel
 from helpers import _mech, _model, assert_failed
 
-
 # ---------------------------------------------------------------------------
 # Passing cases
 # ---------------------------------------------------------------------------
@@ -163,6 +162,21 @@ def test_clean_mechanism_does_not_inflate_duplicate_count():
     result = check_duplicates(_model(m0, m1, m2))
     assert not result.passed
     assert "1" in result.message
+
+
+def test_counter_example_data_not_truncated_when_counter_example_is():
+    """The counter_example string is truncated, but counter_example_data must include all mechanisms."""
+    n = _MAX_SHOWN + 3
+    mechs = []
+    for i in range(n):
+        # Each pair shares the same (det, obs) signature, creating n duplicate groups
+        mechs.append(_mech(0.1, detectors=frozenset({i}), observables=frozenset()))
+        mechs.append(_mech(0.2, detectors=frozenset({i}), observables=frozenset()))
+    result = assert_failed(check_duplicates(_model(*mechs)))
+    # The counter_example string must be truncated
+    assert "more" in result.counter_example
+    # But counter_example_data must have all mechanisms
+    assert len(result.counter_example_data["mechanisms"]) == n * 2
 
 
 # ---------------------------------------------------------------------------

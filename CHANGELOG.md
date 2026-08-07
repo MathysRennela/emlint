@@ -1,124 +1,87 @@
 # Changelog
 
-All notable changes to emlint are documented here.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Version numbers follow [Semantic Versioning](https://semver.org/).
+User-visible changes to emlint. 
+Versions follow [Semantic Versioning](https://semver.org/).
 
----
+## [0.2.0] — 2026-08-06
+
+This version includes optimization to the existing checks, affecting performance relative to v0.1.2. A conscious choice was made to favour speeding up large DEMs at the cost of some overhead for small DEMs.
+
+### Added
+
+- Repeat-aware DEM processing: scope-local checks can inspect repeated mechanisms without expanding every iteration.
+- Strict validation of repeat counts, offsets, detector/observable IDs, and tree node types. Invalid internal trees now raise instead of changing a verdict.
+- Shared flatten caching for the cross-scope `duplicates` and `correctability` checks.
+- Repeat-origin witnesses in `correctability` diagnostics.
+- A validated no-repeat dispatcher path that reduces small-model overhead while preserving the existing check behavior.
+
+### Changed
+
+- Scope-local-only selections perform no flatten operation on repeat-free input.
+- Cross-scope selections use one shared flatten operation.
+- Built-in checks receive isolated read-only views; custom checks receive
+  independent defensive views.
+- Repeated violations are reported by mechanism template/signature count rather
+  than expanded repeat-iteration count.
+- `correctability` structured diagnostics include rendered conflicts, a total
+  conflict count, and an explicit witness-truncation flag.
+- Input failures that prevent linting now use exit code `3`.
+- `correctability` is now `warning` severity, to account that some codes violate it by design.
+- Existing string file paths remain accepted by the Python API for backward
+  compatibility; explicit `Path` objects remain available for unambiguous file input.
+
+### Known limitations
+
+The checks `duplicates` and `correctability` remain flatten-based. Their runtime grows with the expanded mechanism count in repeated DEMs. As a result, the time complexity of a full round of checks is still a function of the number of repeat block rounds.
+
+The Stim frontend still discards `^` separator targets instead of preserving per-component decomposition provenance. The six production checks therefore
+validate the combined `ErrorMechanism` representation and do not independently
+validate the original decomposition.
+
+### Compatibility
+
+- Python >= 3.10
+- Stim >= 1.14
+- No breaking changes to the public Python API or check-result exit-code meanings.
+  CLI input failures now use exit code `3` so that `2` remains exclusively for
+  warning-only lint results. With `--severity error`, warning-only reports are
+  intentionally displayed as zero-error results and exit `0`.
 
 ## [0.1.2] — 2026-05-22
 
 ### Added
 
-- **Tree model** (`model.py`): new `RepeatBlock(body, count)` frozen dataclass
-  represents `REPEAT` blocks as first-class nodes in the error mechanism list.
-  `ErrorModel.error_mechanisms` now holds `ErrorMechanism | RepeatBlock` nodes.
-- **`ErrorModel.flattened()`**: iterator that lazily expands `RepeatBlock` nodes;
-  all built-in checks call `.flattened()` internally and are unaffected by the
-  structural change.
-- **Decomposition-aware `correctability`**: the frontend now parses
-  `^`-separated components in `error(p) A ^ B` instructions to record
-  decomposition provenance (which sub-mechanisms belong to the same original
-  hyperedge).
+- `RepeatBlock` and `ErrorModel.flattened()` for structured DEM repeat blocks.
+- Decomposition-aware provenance for `correctability`.
 
 ### Changed
 
-- More compact implementation of checks from v0.1.0, with a defensive copy of
-  `ErrorModel` to prevent accidental mutation of shared instances across checks.
-- Fixed minor bug in `_det_label`: coordinate lookup now uses `is not None`
-  instead of truthiness, correctly handling detectors at origin `(0, 0, 0)`.
-- `check_correctability` severity promoted from `warning` to `error`; the
-  `decompose_errors=True` false-positive caveat documented in v0.1.0 no longer
-  applies.
-- Explicit error handling in CLI.
-- Broader [stim](https://github.com/quantumlib/Stim) integration coverage.
-- Updated `from_stim_dem` to emit `RepeatBlock` nodes rather than calling
-  `dem.flattened()` eagerly.
-
----
+- `correctability` severity was promoted from `warning` to `error`.
+- The Stim frontend preserves repeat blocks instead of eagerly flattening them.
+- CLI error handling and Stim integration coverage were expanded.
 
 ## [0.1.1] — 2026-04-08
 
 ### Changed
 
-- Quality of life improvements to the presentation of counter-examples.
-- Minor optimizations to the checks implemented in v0.1.1.
-
----
+- Improved counter-example presentation.
+- Minor check-performance improvements.
 
 ## [0.1.0] — 2026-03-26
 
-### Added
+Initial release with six production checks:
 
-**Production checks** (all in `emlint/checks.py`, registered in `ALL_CHECKS`):
+- `detectability` — observable flips without detector triggers (`error`)
+- `sensitivity` — declared detectors never triggered (`warning`)
+- `observable_coverage` — declared observables never flipped (`error`)
+- `probability_bounds` — probabilities outside `(0, 0.5]` (`error`)
+- `duplicates` — repeated mechanism signatures (`warning`)
+- `correctability` — one syndrome mapping to multiple observable sets (`error`)
 
-| Check | What it catches | Severity |
-|---|---|---|
-| `detectability` | Error mechanisms that flip observables but trigger no detectors (undetectable logical errors) | error |
-| `sensitivity` | Detectors never triggered by any error mechanism (dead / orphaned detectors) | warning |
-| `observable_coverage` | Logical observables never flipped by any error mechanism (masked logical qubits) | error |
-| `probability_bounds` | Error probabilities outside `(0, 0.5]` — zero, negative, NaN, or `> 0.5` | error |
-| `duplicates` | Error mechanisms sharing the same `(detectors, observables)` signature (double-counted fault paths) | warning |
-| `correctability` | Syndromes mapping to more than one distinct observable set (decoder ambiguity) | warning |
+The CLI supports text/JSON output, check selection, severity filtering, and
+exit codes `0` (pass), `1` (error), and `2` (warnings only).
 
-**CLI** (`emlint check`):
-- `emlint check <path|string>` — run all checks, exit 0/1/2
-- `--format text|json` — machine-readable JSON output supported
-- `--check <names>` — comma-separated subset of checks
-- `--severity error|warning` — filter reported findings by minimum severity
-- Exit codes: `0` all pass, `1` any `error`-severity failure, `2` warnings only
-
-**Python API**:
-- `emlint.check(source)` — accepts `stim.DetectorErrorModel`, `pathlib.Path`, or raw DEM string
-- `emlint.format_text(report)` / `emlint.format_json(report)` — formatting helpers
-- `ErrorModel`, `Report`, `CheckFn`, `PropertyResult` — public data model
-
-**Stim frontend** (`emlint/frontends.py`):
-- `from_stim_dem(dem)` — converts `stim.DetectorErrorModel` to `ErrorModel`
-- `from_dem(source)` — accepts path or string, parses via stim
-
-**Test suite**:
-- Unit tests for all 6 production checks: passing and failing cases, counter-example content
-- Integration tests on `stim.Circuit.generated` surface codes (d=3, 5, 7) and repetition codes
-- Stim integration tests with `decompose_errors=False` and `decompose_errors=True`
-
-### Known false positives
-
-**`correctability` with `decompose_errors=True`**
-
-When a DEM is generated with `stim`'s `decompose_errors=True`, hyperedge error
-mechanisms are decomposed into weight-2 sub-mechanisms. This decomposition can
-create pairs of sub-mechanisms that share the same detector set but differ in
-which observables they flip — a syndrome collision that does not exist in the
-original hyperedge model.
-
-*Mitigation*: suppress with `--severity error` in CI (correctability is
-`warning`-severity and will not break the build). Use `decompose_errors=False`
-when running emlint if you want a clean `correctability` result with no artefacts.
-The check message includes a note about this artefact when it fires.
-
-**`duplicates` at code boundaries in some CSS code families**
-
-An X error and a Y error on the same data qubit at a repetition code boundary
-can each produce the same detector set and flip the same observable. This is
-legitimate physics (they are degenerate fault paths), not a DEM assembly bug.
-The `duplicates` check fires at `warning` severity and correctly reports the
-XOR-fused probability — the warning is accurate but may not require user action
-in degenerate code families.
-
-*Mitigation*: suppress with `--severity error` in CI.
-
-### Breaking changes
-
-None. This is the initial release.
-
-### Dependencies
-
-- Python ≥ 3.10
-- stim ≥ 1.14
-
----
-
+[0.2.0]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.0
 [0.1.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.2
 [0.1.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.1
 [0.1.0]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.0

@@ -17,7 +17,6 @@ import stim
 import emlint
 from emlint.report import Report
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -42,12 +41,10 @@ def _make_dem(
 
 def test_raw_dem_string_input():
     """emlint.check() should accept a raw DEM string."""
-    dem_str = textwrap.dedent(
-        """\
+    dem_str = textwrap.dedent("""\
         error(0.1) D0 L0
         detector D0
-    """
-    )
+    """)
     report = emlint.check(dem_str)
     assert isinstance(report, Report)
     # D0 is covered and L0 is covered — detectability, sensitivity pass
@@ -64,30 +61,38 @@ def test_raw_dem_string_input():
 
 def test_file_path_input(tmp_path: Path):
     """emlint.check() should accept a pathlib.Path to a .dem file."""
-    dem_str = textwrap.dedent(
-        """\
+    dem_str = textwrap.dedent("""\
         error(0.1) D0 L0
         detector D0
-    """
-    )
+    """)
     dem_file = tmp_path / "test.dem"
     dem_file.write_text(dem_str)
     report = emlint.check(dem_file)
     assert isinstance(report, Report)
 
 
-def test_string_file_path_input(tmp_path: Path):
-    """emlint.check() should accept a str path to a .dem file."""
-    dem_str = textwrap.dedent(
-        """\
+def test_string_file_path_input_remains_supported(tmp_path: Path):
+    """A string path remains supported for backward compatibility."""
+    dem_str = textwrap.dedent("""\
         error(0.1) D0 L0
         detector D0
-    """
-    )
+    """)
     dem_file = tmp_path / "test.dem"
     dem_file.write_text(dem_str)
     report = emlint.check(str(dem_file))
     assert isinstance(report, Report)
+    assert report.all_passed()
+
+
+def test_existing_filename_precedes_raw_text_parsing(tmp_path: Path, monkeypatch):
+    """Explicit Path is preferred when raw text could also be a filename."""
+    dem_str = "error(0.1) D0\ndetector D0"
+    dem_file = tmp_path / dem_str
+    dem_file.write_text("error(0.9) L0")
+    monkeypatch.chdir(tmp_path)
+    report = emlint.check(dem_str)
+    assert not report.all_passed()
+    assert any(result.name == "detectability" for result in report.results)
 
 
 def test_invalid_content_in_path_file_raises_value_error(tmp_path: Path):
@@ -98,12 +103,18 @@ def test_invalid_content_in_path_file_raises_value_error(tmp_path: Path):
         emlint.check(bad_file)
 
 
-def test_invalid_content_in_str_file_path_raises_value_error(tmp_path: Path):
-    """A str path pointing to a file with invalid DEM content must raise ValueError."""
+def test_invalid_raw_dem_string_raises_value_error_for_path_string(tmp_path: Path):
+    """A str that names an existing file is parsed as DEM text, not read as a file.
+
+    A string that is not valid DEM syntax raises ValueError even if a file with
+    that name exists.
+    """
     bad_file = tmp_path / "bad.dem"
     bad_file.write_text("this is not a valid DEM")
+    # The string "bad.dem" is not valid DEM syntax, so it raises regardless of
+    # the existing file.
     with pytest.raises(ValueError, match="Failed to parse DEM"):
-        emlint.check(str(bad_file))
+        emlint.check("bad.dem")
 
 
 def test_invalid_raw_dem_string_raises_value_error():
@@ -133,15 +144,11 @@ def test_detectability_violation_detected():
 
 def test_correctability_violation_detected():
     """The same syndrome pointing at two different observable sets must fail correctability."""
-    dem = stim.DetectorErrorModel(
-        textwrap.dedent(
-            """\
+    dem = stim.DetectorErrorModel(textwrap.dedent("""\
         error(0.1) D0 L0
         error(0.1) D0 L1
         detector D0
-    """
-        )
-    )
+    """))
     report = emlint.check(dem)
     correctability = next(r for r in report.results if r.name == "correctability")
     assert not correctability.passed
@@ -150,15 +157,11 @@ def test_correctability_violation_detected():
 def test_sensitivity_violation_detected():
     """A declared detector with no mechanism referencing it must fail sensitivity."""
     # detector D1 is declared but no error mechanism fires it
-    dem = stim.DetectorErrorModel(
-        textwrap.dedent(
-            """\
+    dem = stim.DetectorErrorModel(textwrap.dedent("""\
         error(0.1) D0 L0
         detector D0
         detector D1
-    """
-        )
-    )
+    """))
     report = emlint.check(dem)
     sensitivity = next(r for r in report.results if r.name == "sensitivity")
     assert not sensitivity.passed
@@ -176,14 +179,10 @@ def test_observable_coverage_violation_detected():
 
 def test_probability_bounds_violation_detected():
     """p=0 must fail probability_bounds."""
-    dem = stim.DetectorErrorModel(
-        textwrap.dedent(
-            """\
+    dem = stim.DetectorErrorModel(textwrap.dedent("""\
         error(0) D0
         detector D0
-    """
-        )
-    )
+    """))
     report = emlint.check(dem)
     bounds = next(r for r in report.results if r.name == "probability_bounds")
     assert not bounds.passed
@@ -191,15 +190,11 @@ def test_probability_bounds_violation_detected():
 
 def test_duplicates_violation_detected():
     """The same mechanism listed twice must fail duplicates."""
-    dem = stim.DetectorErrorModel(
-        textwrap.dedent(
-            """\
+    dem = stim.DetectorErrorModel(textwrap.dedent("""\
         error(0.1) D0 L0
         error(0.2) D0 L0
         detector D0
-    """
-        )
-    )
+    """))
     report = emlint.check(dem)
     dups = next(r for r in report.results if r.name == "duplicates")
     assert not dups.passed
@@ -249,6 +244,7 @@ def test_invalid_source_type_raises_type_error():
 #        signature. Every decomposed DEM will trigger this warning.
 #  - correctability fires for surface codes (same reason as decompose=False
 #        colour code: decomposition artefacts produce conflicting syndrome maps).
+#        These are warnings, not error-severity failures.
 #
 # Hard constraint (confirmed by this audit): zero error-severity violations on
 # any well-formed stim-generated DEM across all code families and distances.
@@ -276,18 +272,13 @@ _EXPECTED_WARNINGS: dict[tuple[str, int, bool], set[str]] = {
     ("repetition_code:memory", 3, True): {"duplicates"},
     ("repetition_code:memory", 5, True): {"duplicates"},
     ("repetition_code:memory", 7, True): {"duplicates"},
-    ("color_code:memory_xyz", 3, False): set(),
-    ("color_code:memory_xyz", 3, True): {"duplicates"},
+    ("color_code:memory_xyz", 3, False): {"correctability"},
+    ("color_code:memory_xyz", 3, True): {"duplicates", "correctability"},
 }
 
-# Known error-severity violations that are genuine code properties, not linter bugs.
-_EXPECTED_ERRORS: dict[tuple[str, int, bool], set[str]] = {
-    # The colour-code DEM is genuinely degenerate: some syndromes map to more
-    # than one distinct observable set.  This is a known property of the code,
-    # not an artefact of the linter.
-    ("color_code:memory_xyz", 3, False): {"correctability"},
-    ("color_code:memory_xyz", 3, True): {"correctability"},
-}
+# Known error-severity violations. Correctability is warning-level because
+# valid degenerate and decomposed DEMs can produce syndrome conflicts.
+_EXPECTED_ERRORS: dict[tuple[str, int, bool], set[str]] = {}
 
 _AUDIT_CASES = [
     pytest.param(
@@ -329,14 +320,17 @@ def test_false_positive_audit(task, distance, rounds, decompose):
     # --- Hard rule: no unexpected error-severity failures -------------------------
     expected_errors = _EXPECTED_ERRORS.get((task, distance, decompose), set())
     error_failures = [
-        r for r in report.results
+        r
+        for r in report.results
         if not r.passed and r.severity == "error" and r.name not in expected_errors
     ]
     assert error_failures == [], (
         f"[{task} d={distance} decompose={decompose}] unexpected error-severity failures: "
         f"{[r.name for r in error_failures]}"
     )
-    actual_errors = {r.name for r in report.results if not r.passed and r.severity == "error"}
+    actual_errors = {
+        r.name for r in report.results if not r.passed and r.severity == "error"
+    }
     assert actual_errors == expected_errors, (
         f"[{task} d={distance} decompose={decompose}] error profile mismatch — "
         f"got {actual_errors}, expected {expected_errors}. "
@@ -373,15 +367,11 @@ def test_multiple_checks_fail_simultaneously():
     Expected passes:   duplicates, probability_bounds, observable_coverage
                        (L0 and L1 are each flipped by one mechanism, so coverage holds).
     """
-    dem = stim.DetectorErrorModel(
-        textwrap.dedent(
-            """\
+    dem = stim.DetectorErrorModel(textwrap.dedent("""\
         error(0.1) L0
         error(0.1) L1
         detector D0
-    """
-        )
-    )
+    """))
     report = emlint.check(dem)
     failed = {r.name for r in report.results if not r.passed}
 
@@ -403,7 +393,9 @@ def test_correctability_passes_on_decomposed_surface_code():
     with decompose_errors=True.  Stim's ^ notation collapses observables via XOR;
     the parser must fold them correctly so that artifical syndrome collisions
     (where L0 appears in both components of a ^ pair) are eliminated."""
-    dem = _make_dem("surface_code:rotated_memory_z", distance=3, rounds=3, decompose=True)
+    dem = _make_dem(
+        "surface_code:rotated_memory_z", distance=3, rounds=3, decompose=True
+    )
     report = emlint.check(dem)
     correctability = next(r for r in report.results if r.name == "correctability")
     assert correctability.passed

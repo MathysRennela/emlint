@@ -1,6 +1,40 @@
 from __future__ import annotations
 
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
+
+
+def _validate_exact_int(value: object, label: str) -> None:
+    """Require an integer field without accepting booleans as integers."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label} must be an exact integer")
+
+
+def _validate_ids(values: Collection[object], label: str) -> None:
+    """Require every identifier in a collection to be a non-negative integer."""
+    for value in values:
+        _validate_exact_int(value, f"{label} ID")
+        if isinstance(value, int) and value < 0:
+            raise ValueError(f"{label} ID must be non-negative")
+
+
+def _validate_shifted_ids(values: Collection[int], offset: int, label: str) -> None:
+    """Reject detector IDs that become negative after one scope offset."""
+    for value in values:
+        absolute = value + offset
+        if absolute < 0:
+            raise ValueError(f"{label} ID becomes negative after applying offset")
+
+
+def _validate_progression_ids(
+    values: Collection[int], start: int, stride: int, count: int, label: str
+) -> None:
+    """Reject negative IDs at both endpoints of a symbolic progression."""
+    if count == 0:
+        return
+    _validate_shifted_ids(values, start, label)
+    if count > 1:
+        _validate_shifted_ids(values, start + (count - 1) * stride, label)
 
 
 @dataclass(frozen=True)
@@ -55,6 +89,47 @@ class ErrorModel:
     # Empty for DEMs that omit coordinates.
     detector_coords: dict[int, tuple[float, ...]] = field(default_factory=dict)
 
+    def _validate_tree(self) -> None:
+        """Validate the repeat tree before any traversal can silently skip data."""
+        _validate_ids(self.detectors, "model detector")
+        _validate_ids(self.observables, "model observable")
+
+        def validate_item(item: ErrorMechanism | RepeatBlock, path: str) -> None:
+            if isinstance(item, ErrorMechanism):
+                if isinstance(item.probability, bool) or not isinstance(
+                    item.probability, (int, float)
+                ):
+                    raise TypeError(f"{path} probability must be numeric")
+                _validate_ids(item.detectors, f"{path} detector")
+                _validate_ids(item.observables, f"{path} observable")
+                return
+            if not isinstance(item, RepeatBlock):
+                raise TypeError(f"{path} must be an ErrorMechanism or RepeatBlock")
+            _validate_exact_int(item.count, f"{path} count")
+            if item.count < 0:
+                raise ValueError(f"{path} count must be non-negative")
+            _validate_exact_int(
+                item.detector_offset_per_iteration,
+                f"{path} detector_offset_per_iteration",
+            )
+            _validate_exact_int(
+                item.absolute_start_offset, f"{path} absolute_start_offset"
+            )
+            if not isinstance(item.body, tuple):
+                raise TypeError(f"{path} body must be a tuple")
+            for index, child in enumerate(item.body):
+                validate_item(child, f"{path}.body[{index}]")
+
+        if not isinstance(self.error_mechanisms, list):
+            raise TypeError("error_mechanisms must be a list")
+        for index, item in enumerate(self.error_mechanisms):
+            validate_item(item, f"error_mechanisms[{index}]")
+
+    def iter_flattened(self) -> Iterator[ErrorMechanism]:
+        """Lazily yield absolute mechanisms without materializing the flat list."""
+        self._validate_tree()
+        yield from self._iter_flattened_unchecked()
+
     def flattened(self) -> list[ErrorMechanism]:
         """Recursively expand the mechanism tree to a flat list.
 
@@ -69,25 +144,45 @@ class ErrorModel:
             A flat list of ErrorMechanism objects with absolute detector indices,
             with all RepeatBlock nesting fully expanded.
         """
-        result: list[ErrorMechanism] = []
+        self._validate_tree()
+        return list(self._iter_flattened_unchecked())
 
-        def walk(items: tuple[ErrorMechanism | RepeatBlock, ...] | list[ErrorMechanism | RepeatBlock], scope_offset: int) -> None:
+    def _iter_flattened_unchecked(self) -> Iterator[ErrorMechanism]:
+        """Lazily expand a tree after the caller completed validation."""
+
+        def walk(
+            items: (
+                tuple[ErrorMechanism | RepeatBlock, ...]
+                | list[ErrorMechanism | RepeatBlock]
+            ),
+            scope_offset: int,
+        ) -> Iterator[ErrorMechanism]:
             for item in items:
                 if isinstance(item, ErrorMechanism):
+                    _validate_shifted_ids(
+                        item.detectors, scope_offset, "absolute detector"
+                    )
                     if scope_offset == 0:
-                        result.append(item)
+                        yield item
                     else:
-                        result.append(ErrorMechanism(
+                        yield ErrorMechanism(
                             probability=item.probability,
-                            detectors=frozenset(d + scope_offset for d in item.detectors),
+                            detectors=frozenset(
+                                d + scope_offset for d in item.detectors
+                            ),
                             observables=item.observables,
-                        ))
+                        )
                 elif isinstance(item, RepeatBlock):
                     for k in range(item.count):
-                        walk(
+                        yield from walk(
                             item.body,
-                            scope_offset + item.absolute_start_offset + k * item.detector_offset_per_iteration,
+                            scope_offset
+                            + item.absolute_start_offset
+                            + k * item.detector_offset_per_iteration,
                         )
 
-        walk(self.error_mechanisms, 0)
-        return result
+        yield from walk(self.error_mechanisms, 0)
+
+    def _flatten_unchecked(self) -> list[ErrorMechanism]:
+        """Expand a tree after the caller has completed model validation."""
+        return list(self._iter_flattened_unchecked())

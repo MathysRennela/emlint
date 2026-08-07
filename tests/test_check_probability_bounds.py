@@ -16,7 +16,6 @@ from emlint.checks import _MAX_SHOWN, _prob_label, check_probability_bounds
 from emlint.model import ErrorModel
 from helpers import _mech, _model, assert_failed
 
-
 # ---------------------------------------------------------------------------
 # Passing cases
 # ---------------------------------------------------------------------------

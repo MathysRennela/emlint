@@ -15,7 +15,6 @@ import pytest
 
 from emlint.cli import _build_parser, main
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -169,6 +168,26 @@ def test_raw_dem_string_input():
     assert result.returncode == 0
 
 
+def test_valid_mixed_coordinate_dem_is_linted():
+    dem = "detector(1, 2) D0\ndetector(3, 4, 5) D1\nerror(0.01) D0 D1 L0"
+    result = _run(["check", dem])
+    assert result.returncode == 0
+    assert "Detectors" in result.stdout
+
+
+def test_unparseable_dem_has_distinct_exit_code():
+    result = _run(["check", "this is not a DEM"])
+    assert result.returncode == 3
+    assert "unable to lint input" in result.stderr
+
+
+def test_directory_input_has_distinct_exit_code(tmp_path):
+    result = _run(["check", str(tmp_path)])
+    assert result.returncode == 3
+    assert "unable to lint input" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 # ---------------------------------------------------------------------------
 # --severity filter
 # ---------------------------------------------------------------------------
@@ -183,6 +202,13 @@ def test_severity_error_suppresses_warnings(tmp_path):
     data = json.loads(result.stdout)
     # No warning-severity results in output
     assert all(r["severity"] == "error" for r in data["results"])
+
+
+def test_severity_warning_only_exits_2_by_default(tmp_path):
+    dem_file = tmp_path / "warn.dem"
+    dem_file.write_text(WARNING_DEM)
+    result = _run(["check", str(dem_file)])
+    assert result.returncode == 2
 
 
 def test_severity_error_still_exits_1_on_errors(tmp_path):

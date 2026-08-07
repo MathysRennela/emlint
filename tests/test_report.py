@@ -13,7 +13,6 @@ import hypothesis.strategies as st
 from emlint.checks import _xor_fold
 from emlint.report import PropertyResult, Report, format_json, format_text
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

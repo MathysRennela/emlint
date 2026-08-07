@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import sys
+from pathlib import Path
 
 import emlint
 from emlint.checks import ALL_CHECKS
@@ -72,14 +73,16 @@ def main() -> None:
             )
         checks = {n: ALL_CHECKS[n] for n in names}
 
+    # Resolve an existing regular file explicitly. Non-files are passed through
+    # so emlint.check() can parse raw DEM text and report input failures.
+    candidate = Path(args.source)
+    source = candidate if candidate.is_file() else args.source
+
     try:
-        report = emlint.check(args.source, checks=checks)
-    except FileNotFoundError:
-        parser.error(f"File not found: {args.source}")
-    except PermissionError:
-        parser.error(f"Permission denied: {args.source}")
-    except ValueError as exc:
-        parser.error(str(exc))
+        report = emlint.check(source, checks=checks)
+    except (OSError, ValueError) as exc:
+        print(f"emlint: unable to lint input: {exc}", file=sys.stderr)
+        sys.exit(3)
 
     # Apply severity filter to the displayed output only; exit code is always
     # based on the full report so that error-severity failures are never silently dropped.

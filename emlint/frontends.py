@@ -25,12 +25,14 @@ def _walk_dem_instructions(
             # Walk the body with a fresh offset (body IDs are iteration-relative,
             # starting from 0 at the beginning of each iteration).
             body_items, body_shift = _walk_dem_instructions(instruction.body_copy())
-            result.append(RepeatBlock(
-                body=tuple(body_items),
-                count=instruction.repeat_count,
-                detector_offset_per_iteration=body_shift,
-                absolute_start_offset=current_offset,
-            ))
+            result.append(
+                RepeatBlock(
+                    body=tuple(body_items),
+                    count=instruction.repeat_count,
+                    detector_offset_per_iteration=body_shift,
+                    absolute_start_offset=current_offset,
+                )
+            )
             current_offset += instruction.repeat_count * body_shift
         else:
             instr_type = instruction.type
@@ -80,4 +82,3 @@ def from_stim_dem(dem: stim.DetectorErrorModel) -> ErrorModel:
         error_mechanisms=error_mechanisms,
         detector_coords={k: tuple(vs) for k, vs in raw_coords.items() if vs},
     )
-
