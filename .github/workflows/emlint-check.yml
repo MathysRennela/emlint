@@ -21,4 +21,4 @@ jobs:
         run: python -m pip install .
 
       - name: Check reference DEM
-        run: emlint check benchmarks/baseline_d5_r5.dem --severity error
+        run: emlint check examples/fixed.dem --severity error
