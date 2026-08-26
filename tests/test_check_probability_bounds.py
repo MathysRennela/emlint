@@ -203,7 +203,8 @@ def test_mixed_valid_and_invalid_counts_only_violations():
     mechs = [_mech(0.1), _mech(0.0), _mech(0.5), _mech(0.9)]
     result = check_probability_bounds(_model(*mechs))
     assert not result.passed
-    assert "2" in result.message  # 2 violations: p=0 and p=0.9
+    # 2 violations: p=0 and p=0.9
+    assert "Found 2 error mechanism instance(s)" in result.message
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +275,79 @@ def test_counter_example_data_contains_all_violations():
     assert len(mechs) == 2
     assert any("D0" in s for s in mechs)
     assert any("D1" in s for s in mechs)
+
+
+def test_instance_count_scales_with_repeat_multiplicity():
+    """A violation inside a REPEAT block recurs once per iteration.
+
+    counter_example_data["instance_count"] and the message must report the
+    true number of flattened instances, not just the number of distinct
+    repeat-body locations (regression test for undercounting).
+    """
+    from emlint.model import RepeatBlock
+
+    body = (_mech(0.7, detectors=frozenset({0})),)
+    block = RepeatBlock(
+        body=body, count=4, detector_offset_per_iteration=1, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(10)), observables=set(), error_mechanisms=[block]
+    )
+    result = assert_failed(check_probability_bounds(model))
+    assert result.counter_example_data["instance_count"] == 4
+    assert "Found 4 error mechanism instance(s)" in result.message
+    # Ground truth: flattening confirms 4 independent violating instances.
+    flattened_violations = [
+        m for m in model.flattened() if not (0.0 < m.probability <= 0.5)
+    ]
+    assert len(flattened_violations) == 4
+
+
+def test_truncation_message_when_many_violations():
+    """More than _MAX_SHOWN violations should mention the overflow count."""
+    n = _MAX_SHOWN + 2
+    mechs = [_mech(0.9, detectors=frozenset({i})) for i in range(n)]
+    result = assert_failed(check_probability_bounds(_model(*mechs)))
+    assert not result.passed
+    assert result.severity == "warning"
+    assert "more" in result.counter_example
+    # All violations are still present in the structured data.
+    assert len(result.counter_example_data["mechanisms"]) == n
+
+
+def test_truncation_boundary_exactly_max_shown_has_no_overflow():
+    """Exactly _MAX_SHOWN violations must render all of them, no overflow note.
+
+    Guards the off-by-one at the truncation boundary (mutant: `<` → `<=`).
+    """
+    n = _MAX_SHOWN
+    mechs = [_mech(0.9, detectors=frozenset({i})) for i in range(n)]
+    result = assert_failed(check_probability_bounds(_model(*mechs)))
+    assert not result.passed
+    assert "more" not in result.counter_example
+    assert f"D{n - 1}" in result.counter_example
+
+
+def test_tag_counts_aggregate_across_repeat_instances():
+    """tag_counts must sum multiplicities across templates, not overwrite.
+
+    Two violating templates with the same tag and multiplicity 3 each must
+    report 6 instances (mutant: `+=` → `=` reports 3).
+    """
+    from emlint.model import RepeatBlock
+
+    body = (
+        _mech(0.9, detectors=frozenset({0})),
+        _mech(0.8, detectors=frozenset({1})),
+    )
+    block = RepeatBlock(
+        body=body, count=3, detector_offset_per_iteration=2, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(10)), observables=set(), error_mechanisms=[block]
+    )
+    result = assert_failed(check_probability_bounds(model))
+    assert "Found 6 error mechanism instance(s)" in result.message
 
 
 # ---------------------------------------------------------------------------

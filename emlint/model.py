@@ -44,6 +44,11 @@ class ErrorMechanism:
     probability: float
     detectors: frozenset[int]
     observables: frozenset[int]
+    # Per-^ component signatures from a decomposed error instruction.
+    # Each element is (detectors, observables) for one component; empty when
+    # the instruction carried no separator targets. Component detector IDs are
+    # stored with the same scoping as `detectors` (relative inside repeat bodies).
+    decomposition_hints: tuple[tuple[frozenset[int], frozenset[int]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,7 @@ class ErrorModel:
     # Populated when the DEM carries detector() coordinate annotations.
     # Empty for DEMs that omit coordinates.
     detector_coords: dict[int, tuple[float, ...]] = field(default_factory=dict)
+    unknown_instructions: list[str] = field(default_factory=list)
 
     def _validate_tree(self) -> None:
         """Validate the repeat tree before any traversal can silently skip data."""
@@ -102,6 +108,11 @@ class ErrorModel:
                     raise TypeError(f"{path} probability must be numeric")
                 _validate_ids(item.detectors, f"{path} detector")
                 _validate_ids(item.observables, f"{path} observable")
+                if not isinstance(item.decomposition_hints, tuple):
+                    raise TypeError(f"{path} decomposition_hints must be a tuple")
+                for ci, (cdets, cobs) in enumerate(item.decomposition_hints):
+                    _validate_ids(cdets, f"{path} decomposition_hints[{ci}] detector")
+                    _validate_ids(cobs, f"{path} decomposition_hints[{ci}] observable")
                 return
             if not isinstance(item, RepeatBlock):
                 raise TypeError(f"{path} must be an ErrorMechanism or RepeatBlock")
@@ -171,6 +182,13 @@ class ErrorModel:
                                 d + scope_offset for d in item.detectors
                             ),
                             observables=item.observables,
+                            decomposition_hints=tuple(
+                                (
+                                    frozenset(d + scope_offset for d in cdets),
+                                    cobs,
+                                )
+                                for cdets, cobs in item.decomposition_hints
+                            ),
                         )
                 elif isinstance(item, RepeatBlock):
                     for k in range(item.count):

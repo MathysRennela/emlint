@@ -1,26 +1,79 @@
-from emlint.checks import ALL_CHECKS
+from __future__ import annotations
 
+import inspect
 from typing import Callable
 
-import pytest, inspect
+import pytest
+
+from emlint.checks import ALL_CHECKS
+from emlint.model import ErrorModel
 
 
-def test_validate_checks():
-    """Validate all registered checks follow the required pattern."""
-    for name, check_fn in ALL_CHECKS.items():
-        # Create a simple test model to verify check doesn't crash
-        # This would be a basic smoke test
-        pass
+@pytest.mark.parametrize("name, check_fn", ALL_CHECKS.items())
+def test_registered_check_has_matching_result_name(
+    name: str, check_fn: Callable
+) -> None:
+    result = check_fn(ErrorModel(set(), set(), []))
+    assert result.name == name
 
 
-check_fns = ALL_CHECKS.values()
+@pytest.mark.parametrize("name, check_fn", ALL_CHECKS.items())
+def test_registered_check_satisfies_result_contract(
+    name: str, check_fn: Callable
+) -> None:
+    result = check_fn(ErrorModel(set(), set(), []))
+    assert result.severity in {"error", "warning"}
+    if result.passed:
+        assert result.counter_example is None
+        assert result.counter_example_data is None
+    else:
+        assert result.counter_example is not None
+        assert result.counter_example_data is not None
 
 
-@pytest.mark.parametrize("check_fn", check_fns)
+@pytest.mark.parametrize("name, check_fn", ALL_CHECKS.items())
+def test_registered_check_reports_counterexamples_on_failure(
+    name: str, check_fn: Callable
+) -> None:
+    """Every production check has a minimal model that violates its property."""
+    from emlint.model import ErrorMechanism
+
+    cases = {
+        "detectability": ErrorModel(
+            set(), {0}, [ErrorMechanism(0.1, frozenset(), frozenset({0}))]
+        ),
+        "sensitivity": ErrorModel({0}, set(), []),
+        "observable_coverage": ErrorModel(set(), {0}, []),
+        "probability_bounds": ErrorModel(
+            set(), set(), [ErrorMechanism(0.0, frozenset(), frozenset())]
+        ),
+        "duplicates": ErrorModel(
+            set(),
+            set(),
+            [
+                ErrorMechanism(0.1, frozenset(), frozenset()),
+                ErrorMechanism(0.2, frozenset(), frozenset()),
+            ],
+        ),
+        "correctability": ErrorModel(
+            {0},
+            {0, 1},
+            [
+                ErrorMechanism(0.1, frozenset({0}), frozenset({0})),
+                ErrorMechanism(0.1, frozenset({0}), frozenset({1})),
+            ],
+        ),
+    }
+    result = check_fn(cases[name])
+    assert not result.passed
+    assert result.counter_example is not None
+    assert result.counter_example_data is not None
+
+
+@pytest.mark.parametrize("check_fn", ALL_CHECKS.values())
 def test_validate_check_signature(check_fn: Callable) -> None:
-    """Validate a check function has the correct signature."""
-
     sig = inspect.signature(check_fn)
-    params = list(sig.parameters.keys())
-
-    assert len(params) >= 1 and params[0] == "model"
+    params = list(sig.parameters.values())
+    assert params[0].name == "model"
+    assert len(params) == 2
+    assert params[1].name == "max_shown"

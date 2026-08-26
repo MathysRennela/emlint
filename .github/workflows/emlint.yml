@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Check formatting with black
+        run: black --check .
+
+      - name: Run tests with coverage
+        run: python -m pytest tests/ -W error -v --cov=emlint --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
+          path: coverage.xml
+
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify uv.lock is consistent with pyproject.toml
+        run: uv lock --check
+
+  release-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package and build tool
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pip install build
+
+      - name: Run release quality gates
+        run: python -m pytest -W error -q
+
+      - name: Build source distribution and wheel
+        run: python -m build --sdist --wheel
+
+      - name: Check known-good DEM
+        run: emlint check benchmarks/baseline_d5_r5.dem --severity error
+
+      - name: Check known-bad DEM returns an error exit code
+        shell: bash
+        run: |
+          set +e
+          emlint check 'error(0.1) L0'
+          status=$?
+          set -e
+          test "$status" -eq 1
+
+  test-stim-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install package with benchmark dependencies (includes qldpc)
+        run: pip install -e ".[benchmark]"
+
+      - name: Run Stim integration tests
+        run: python -m pytest tests/test_stim_integration.py -v

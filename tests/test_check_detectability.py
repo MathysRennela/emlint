@@ -12,7 +12,12 @@ import pytest
 from hypothesis import given
 import hypothesis.strategies as st
 
-from emlint.checks import _MAX_SHOWN, check_detectability
+from emlint.checks import (
+    _MAX_SHOWN,
+    _iter_repeat_templates,
+    _shift_mechanism,
+    check_detectability,
+)
 from emlint.model import ErrorModel
 from helpers import _mech, _model, assert_failed
 
@@ -170,6 +175,92 @@ def test_counter_example_data_mechanism_string_format():
     assert "L0" in mech_strs[0]
 
 
+def test_instance_count_scales_with_repeat_multiplicity():
+    """A violation inside a REPEAT block recurs once per iteration.
+
+    counter_example_data["instance_count"] and the message must report the
+    true number of flattened instances, not just the number of distinct
+    repeat-body locations (regression test for undercounting).
+    """
+    from emlint.model import RepeatBlock
+
+    body = (_mech(0.01, detectors=frozenset(), observables=frozenset({0})),)
+    block = RepeatBlock(
+        body=body, count=5, detector_offset_per_iteration=1, absolute_start_offset=0
+    )
+    model = ErrorModel(detectors=set(), observables={0}, error_mechanisms=[block])
+    result = assert_failed(check_detectability(model))
+    assert result.counter_example_data["instance_count"] == 5
+    assert "Found 5 undetectable error mechanism instance(s)" in result.message
+    # Ground truth: flattening confirms 5 independent violating instances.
+    flattened_violations = [
+        m for m in model.flattened() if not m.detectors and m.observables
+    ]
+    assert len(flattened_violations) == 5
+
+
+def test_truncation_message_when_many_violations():
+    """More than _MAX_SHOWN violations should mention the overflow count."""
+    n = _MAX_SHOWN + 3
+    mechs = [
+        _mech(0.1, detectors=frozenset(), observables=frozenset({i})) for i in range(n)
+    ]
+    result = assert_failed(check_detectability(_model(*mechs)))
+    assert not result.passed
+    assert "more" in result.counter_example
+    # All violations are still present in the structured data.
+    assert len(result.counter_example_data["mechanisms"]) == n
+
+
+def test_truncation_boundary_exactly_max_shown_has_no_overflow():
+    """Exactly _MAX_SHOWN violations must render all of them, no overflow note.
+
+    Guards the off-by-one at the truncation boundary (mutant: `>` → `>=`).
+    """
+    n = _MAX_SHOWN
+    mechs = [
+        _mech(0.1, detectors=frozenset(), observables=frozenset({i})) for i in range(n)
+    ]
+    result = assert_failed(check_detectability(_model(*mechs)))
+    assert not result.passed
+    assert "more" not in result.counter_example
+    # Every violation is rendered: the last one appears in the counter-example.
+    assert f"L{n - 1}" in result.counter_example
+
+
+def test_passing_message_states_the_invariant():
+    """The passing message must state the verified invariant, not be empty.
+
+    Guards against a silent pass (mutant: passing-path `message=None`).
+    """
+    m = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
+    result = check_detectability(_model(m))
+    assert result.passed
+    assert result.message
+    assert "detector" in result.message.lower()
+
+
+def test_repeat_shift_preserves_detector_ids_in_witness():
+    """A violating mechanism inside an offset REPEAT block reports absolute IDs.
+
+    The witness is built with `_shift_mechanism`; a mutant that drops the shift
+    (offset=None) would report the template's unshifted detector IDs.
+    """
+    from emlint.model import RepeatBlock
+
+    body = (_mech(0.1, detectors=frozenset(), observables=frozenset({0})),)
+    block = RepeatBlock(
+        body=body, count=3, detector_offset_per_iteration=7, absolute_start_offset=2
+    )
+    model = ErrorModel(detectors=set(), observables={0}, error_mechanisms=[block])
+    result = assert_failed(check_detectability(model))
+    # Violating mechanisms have no detectors, so the witness names the
+    # observable; the structured data must still carry one entry per instance.
+    assert result.counter_example_data["instance_count"] == 3
+    shifted = _shift_mechanism(body[0], 2)
+    assert shifted.detectors == frozenset()
+
+
 # ---------------------------------------------------------------------------
 # from_stim_dem round-trip
 # ---------------------------------------------------------------------------
@@ -195,3 +286,30 @@ def test_detectable_error_from_stim_dem_passes():
     dem = stim.DetectorErrorModel("error(0.1) D0 L0\ndetector D0")
     model = from_stim_dem(dem)
     assert check_detectability(model).passed
+
+
+def test_witness_preserves_decomposition_hints_with_shift():
+    """Witness materialization must shift hint component detector IDs exactly
+    like merged IDs — provenance survives the repeat fast path (regression
+    for hints being silently dropped by witness/shift helpers)."""
+    from emlint.model import ErrorMechanism, RepeatBlock
+
+    mech = ErrorMechanism(
+        0.1,
+        frozenset({1}),
+        frozenset({0}),
+        ((frozenset({1}), frozenset({0})), (frozenset(), frozenset())),
+    )
+    block = RepeatBlock(
+        body=(mech,), count=2, detector_offset_per_iteration=10, absolute_start_offset=5
+    )
+    model = ErrorModel(set(range(30)), {0}, [block])
+    witness = _shift_mechanism(
+        _iter_repeat_templates(model)[0].mechanism,
+        _iter_repeat_templates(model)[0].absolute_start,
+    )
+    assert witness.detectors == frozenset({6})
+    assert witness.decomposition_hints == (
+        (frozenset({6}), frozenset({0})),
+        (frozenset(), frozenset()),
+    )

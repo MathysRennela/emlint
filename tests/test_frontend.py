@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import stim
 import pytest
+from hypothesis import given
+import hypothesis.strategies as st
 
 from emlint.frontends import from_stim_dem
 from emlint.model import ErrorMechanism
@@ -320,6 +322,156 @@ def test_detector_coords_with_repeat_blocks():
     model = from_stim_dem(dem)
     assert model.detector_coords[0] == (1.0, 2.0)
     assert model.detector_coords[1] == (3.0, 4.0)
+
+
+# ---------------------------------------------------------------------------
+# Decomposition hints (^ separator targets)
+# ---------------------------------------------------------------------------
+
+
+def test_separator_two_components_d2_xor_d0():
+    """`error(0.02) D2 ^ D0` must preserve both component signatures."""
+    dem = stim.DetectorErrorModel("error(0.02) D2 ^ D0")
+    model = from_stim_dem(dem)
+    m = model.error_mechanisms[0]
+    assert isinstance(m, ErrorMechanism)
+    # Merged signature is unchanged (XOR fold across components).
+    assert m.detectors == frozenset({0, 2})
+    assert m.observables == frozenset()
+    assert m.decomposition_hints == (
+        (frozenset({2}), frozenset()),
+        (frozenset({0}), frozenset()),
+    )
+
+
+def test_separator_observable_cancellation_d3_l0_xor_d1_l0():
+    """`error(0.1) D3 L0 ^ D1 L0`: merged observables cancel, but each
+    component keeps its own observable so it is distinguishable from an
+    ordinary `D1 D3` mechanism."""
+    dem = stim.DetectorErrorModel("error(0.1) D3 L0 ^ D1 L0")
+    model = from_stim_dem(dem)
+    m = model.error_mechanisms[0]
+    assert isinstance(m, ErrorMechanism)
+    assert m.detectors == frozenset({1, 3})
+    assert m.observables == frozenset()
+    assert m.decomposition_hints == (
+        (frozenset({3}), frozenset({0})),
+        (frozenset({1}), frozenset({0})),
+    )
+
+
+def test_no_separator_gives_empty_decomposition_hints():
+    dem = stim.DetectorErrorModel("error(0.1) D0 D1")
+    model = from_stim_dem(dem)
+    m = model.error_mechanisms[0]
+    assert isinstance(m, ErrorMechanism)
+    assert m.decomposition_hints == ()
+
+
+def test_separator_three_components():
+    dem = stim.DetectorErrorModel("error(0.1) D0 ^ D1 ^ D2")
+    model = from_stim_dem(dem)
+    m = model.error_mechanisms[0]
+    assert isinstance(m, ErrorMechanism)
+    assert len(m.decomposition_hints) == 3
+    assert m.decomposition_hints[0] == (frozenset({0}), frozenset())
+    assert m.decomposition_hints[2] == (frozenset({2}), frozenset())
+
+
+def test_separator_inside_repeat_block_flattens_with_offsets():
+    """Nested REPEAT: component detector IDs must be shifted like merged IDs."""
+    dem = stim.DetectorErrorModel("""
+        repeat 2 {
+            error(0.01) D0 ^ D1
+            shift_detectors 2
+        }
+    """)
+    model = from_stim_dem(dem)
+    flat = model.flattened()
+    assert len(flat) == 2
+    assert flat[0].decomposition_hints == (
+        (frozenset({0}), frozenset()),
+        (frozenset({1}), frozenset()),
+    )
+    assert flat[1].decomposition_hints == (
+        (frozenset({2}), frozenset()),
+        (frozenset({3}), frozenset()),
+    )
+
+
+def test_stim_generated_decomposed_dem_preserves_hints():
+    """A real Stim-generated decomposed DEM (repetition code round) must carry
+    decomposition hints on its separator-bearing mechanisms."""
+    circuit = stim.Circuit.generated(
+        "repetition_code:memory",
+        distance=3,
+        rounds=3,
+        after_clifford_depolarization=0.001,
+    )
+    dem = circuit.detector_error_model(decompose_errors=True)
+    model = from_stim_dem(dem)
+    flat = model.flattened()
+    hinted = [m for m in flat if m.decomposition_hints]
+    assert hinted, "expected separator-bearing mechanisms in decomposed DEM"
+    for m in hinted:
+        # Every hint component is non-empty in detectors and consistent with
+        # the merged signature.
+        assert all(cdets for cdets, _ in m.decomposition_hints)
+        merged_dets = frozenset().union(*(cdets for cdets, _ in m.decomposition_hints))
+        assert merged_dets <= m.detectors
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis: property-based tests
+# ---------------------------------------------------------------------------
+
+
+@given(
+    components=st.lists(
+        st.tuples(
+            st.frozensets(st.integers(0, 8), min_size=1),
+            st.frozensets(st.integers(0, 3)),
+        ),
+        min_size=2,
+        max_size=3,
+    ),
+    p=st.floats(min_value=1e-4, max_value=0.5),
+)
+def test_roundtrip_separator_dem_preserves_component_signatures(components, p):
+    """For any component list, building a DEM text with ^ separators and
+    parsing it back must reproduce exactly those component signatures."""
+    # Restrict to pairwise-disjoint component detector sets: this matches what
+    # stim's decompose_errors=True actually emits (verified empirically across
+    # generated repetition-code DEMs) and keeps the merged-signature assertion
+    # independent of the XOR-vs-union question for overlapping components.
+    used: set[int] = set()
+    disjoint = []
+    for cdets, cobs in components:
+        if cdets & used:
+            return
+        used |= cdets
+        disjoint.append((cdets, cobs))
+    targets: list[str] = []
+    merged_dets: set[int] = set()
+    merged_obs: set[int] = set()
+    for i, (cdets, cobs) in enumerate(disjoint):
+        if i > 0:
+            targets.append("^")
+        targets.extend(f"D{d}" for d in sorted(cdets))
+        targets.extend(f"L{o}" for o in sorted(cobs))
+        merged_dets |= set(cdets)
+        merged_obs ^= set(cobs)
+    text = "error(%r) %s" % (p, " ".join(targets))
+    model = from_stim_dem(stim.DetectorErrorModel(text))
+    mech = model.error_mechanisms[0]
+    assert isinstance(mech, ErrorMechanism)
+    assert mech.decomposition_hints == tuple(
+        (frozenset(cdets), frozenset(cobs)) for cdets, cobs in disjoint
+    )
+    # With disjoint components the merged signature is unambiguous: XOR fold
+    # and union of component sets coincide.
+    assert mech.detectors == frozenset(merged_dets)
+    assert mech.observables == frozenset(merged_obs)
 
 
 # ---------------------------------------------------------------------------

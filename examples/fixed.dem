@@ -1,0 +1,42 @@
+# d=5 surface code (simplified), 3 syndrome extraction rounds
+# Fixed: D17 is properly connected to its neighbours D9 and D18.
+# emlint check: all checks PASS.
+
+# --- Cross-round errors (same stabilizer, adjacent rounds) ---
+error(0.001) D0 D8
+error(0.001) D1 D9
+error(0.001) D2 D10
+error(0.001) D3 D11
+error(0.001) D4 D12
+error(0.001) D5 D13
+error(0.001) D6 D14
+error(0.001) D7 D15
+error(0.001) D8 D16
+error(0.001) D9 D17
+error(0.001) D10 D18
+error(0.001) D11 D19
+error(0.001) D12 D20
+error(0.001) D13 D21
+error(0.001) D14 D22
+error(0.001) D15 D23
+
+# --- Intra-round errors (adjacent stabilizers within each round) ---
+error(0.001) D0 D1
+error(0.001) D2 D3
+error(0.001) D4 D5
+error(0.001) D6 D7
+error(0.001) D8 D9
+error(0.001) D10 D11
+error(0.001) D12 D13
+error(0.001) D14 D15
+error(0.001) D16 D17
+error(0.001) D17 D18
+error(0.001) D19 D20
+error(0.001) D21 D22
+
+# --- Logical errors (boundary chain to L0) ---
+error(0.001) D0 L0
+error(0.001) D8 L0
+error(0.001) D16 L0
+error(0.001) D1 D2 L0
+error(0.001) D9 D10 L0

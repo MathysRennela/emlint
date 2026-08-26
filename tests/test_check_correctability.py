@@ -18,7 +18,7 @@ import hypothesis.strategies as st
 
 import emlint.checks as checks_module
 from emlint.checks import _MAX_SHOWN, check_correctability
-from emlint.model import ErrorModel
+from emlint.model import ErrorMechanism, ErrorModel
 from helpers import _mech, _model, assert_failed
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,25 @@ def test_same_syndrome_same_observables_passes():
     m1 = _mech(0.2, detectors=frozenset({0}), observables=frozenset({0}))
     result = check_correctability(_model(m0, m1))
     assert result.passed
+
+
+def test_decomposed_union_signature_conflict_detected():
+    """A decomposed mechanism whose components share detectors consumes as the
+    union of component detector sets: `D0 L0 ^ D0` consumes as ({D0},{L0}),
+    not the XOR-folded ({}, {L0}). A plain ({D0},{}) mechanism therefore
+    conflicts with it under the decoder-facing view."""
+    decomposed = ErrorMechanism(
+        probability=0.1,
+        detectors=frozenset(),  # XOR-folded merged view: D0 cancels itself
+        observables=frozenset({0}),
+        decomposition_hints=(
+            (frozenset({0}), frozenset({0})),
+            (frozenset({0}), frozenset()),
+        ),
+    )
+    plain = _mech(0.1, detectors=frozenset({0}))
+    result = check_correctability(_model(decomposed, plain))
+    assert not result.passed
 
 
 def test_same_syndrome_same_observables_three_copies_passes():
@@ -148,7 +167,7 @@ def test_two_independent_conflicts_counted():
     ]
     result = check_correctability(_model(*mechs))
     assert not result.passed
-    assert "2" in result.message
+    assert "Found 2 syndrome(s)" in result.message
 
 
 def test_clean_syndrome_not_polluting_conflict_count():
@@ -182,6 +201,31 @@ def test_three_distinct_observable_sets_in_conflict():
     # All three observable sets should appear in the counter_example
     ce = assert_failed(result).counter_example
     assert "L0" in ce and "L1" in ce and "L2" in ce
+
+
+def test_observable_variants_rendered_in_deterministic_order():
+    """Observable-set variants must render sorted by their sorted-element key.
+
+    Guards the variant ordering (mutants: `key=lambda s: sorted(s)` → `None`),
+    which would order frozensets by an arbitrary hash-dependent tiebreak and
+    make the counter-example non-deterministic across runs. With variants
+    {L1}, {L0, L2}, {L0}: key = sorted elements gives [{L0}, {L0 L2}, {L1}]
+    — note this differs from plain `sorted(obs_set)`, which would put {L1}
+    before {L0, L2} (1 < [0, 2] elementwise on frozensets' default order).
+    """
+    mechs = [
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({1})),
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({0, 2})),
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({0})),
+    ]
+    ce = assert_failed(check_correctability(_model(*mechs))).counter_example
+    i_solo_l0 = ce.index("{L0}")
+    i_l1 = ce.index("{L1}")
+    i_pair = ce.index("{L0 L2}")
+    # Expected: {L0}, then {L0 L2}, then {L1}. The distinguishing assertion is
+    # {L0 L2} BEFORE {L1}: under the mutant (key=None → default frozenset
+    # ordering) {L1} would sort before {L0, L2}.
+    assert i_solo_l0 < i_pair < i_l1
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +401,40 @@ def test_counter_example_data_contains_rendered_conflicts_and_total_count():
     assert [1] in syndromes
 
 
+def test_total_conflicts_scales_with_repeat_multiplicity():
+    """A conflict inside an isolated REPEAT block recurs once per iteration,
+    each at a distinct shifted absolute detector location.
+
+    counter_example_data["total_conflicts"] and the message must report the
+    true number of distinct conflicting syndromes across all iterations, not
+    just the count found in one representative iteration (regression test
+    for undercounting in the cross-scope symbolic fast path).
+    """
+    from emlint.model import RepeatBlock
+
+    body = (
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({0})),
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset({1})),
+    )
+    block = RepeatBlock(
+        body=body, count=3, detector_offset_per_iteration=10, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(30)), observables={0, 1}, error_mechanisms=[block]
+    )
+    result = assert_failed(check_correctability(model))
+    assert result.counter_example_data["total_conflicts"] == 3
+    assert "Found 3 syndrome(s)" in result.message
+    # Ground truth: flattening confirms 3 distinct conflicting syndromes, one
+    # per repeat iteration (D0, D10, D20).
+    flattened = model.flattened()
+    syndrome_to_observables: dict = {}
+    for m in flattened:
+        syndrome_to_observables.setdefault(m.detectors, set()).add(m.observables)
+    conflicting = [s for s, obs in syndrome_to_observables.items() if len(obs) > 1]
+    assert len(conflicting) == 3
+
+
 # ---------------------------------------------------------------------------
 # Detector coordinate labels
 # ---------------------------------------------------------------------------
@@ -423,10 +501,11 @@ def test_unambiguous_dem_from_stim_dem_passes():
 
 
 def test_decomposed_observable_cancels_no_conflict():
-    """error(p) D0 L0 ^ D1 L0 has net obs={} because L0 appears in both ^ components
-    (XOR semantics: even occurrences cancel).  Together with a standalone
-    error(q) D0 D1 (obs={}), syndrome {D0,D1} maps to a unique observable set {}.
-    Requires frontends.py to XOR-fold observables across ^ boundaries."""
+    """error(p) D0 L0 ^ D1 L0: observable frame changes compose by XOR across
+    components (firing both flips L0 twice = no flip), so the mechanism's
+    observable set stays {} and it does NOT conflict with error(q) D0 D1.
+    Detector symptoms, however, merge by union — verified against pymatching,
+    which builds one independent boundary edge per component."""
     import stim
     from emlint.frontends import from_stim_dem
 

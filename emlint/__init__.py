@@ -19,7 +19,7 @@ from emlint.checks import (
     check_sensitivity,
 )
 from emlint.model import ErrorMechanism, ErrorModel, RepeatBlock
-from emlint.report import CheckFn, Report, format_json, format_text
+from emlint.report import CheckFn, PropertyResult, Report, format_json, format_text
 
 _SCOPE_LOCAL_CHECKS = {
     check_detectability,
@@ -75,6 +75,7 @@ class _ReadOnlyModelView:
     observables: frozenset[int]
     error_mechanisms: tuple[ErrorMechanism | RepeatBlock, ...]
     detector_coords: Mapping[int, tuple[float, ...]]
+    unknown_instructions: tuple[str, ...]
     _source: ErrorModel
     _cache: _FlattenCache | None
     _validated: bool
@@ -82,7 +83,13 @@ class _ReadOnlyModelView:
     _cross_scope_reduction: object | None
 
     _READ_ONLY_FIELDS = frozenset(
-        {"detectors", "observables", "error_mechanisms", "detector_coords"}
+        {
+            "detectors",
+            "observables",
+            "error_mechanisms",
+            "detector_coords",
+            "unknown_instructions",
+        }
     )
 
     def __init__(
@@ -97,6 +104,9 @@ class _ReadOnlyModelView:
         object.__setattr__(self, "error_mechanisms", mechanisms)
         object.__setattr__(
             self, "detector_coords", MappingProxyType(dict(model.detector_coords))
+        )
+        object.__setattr__(
+            self, "unknown_instructions", tuple(model.unknown_instructions)
         )
         object.__setattr__(self, "_source", model)
         object.__setattr__(self, "_cache", cache)
@@ -152,6 +162,11 @@ __all__ = [
 def check(
     source: stim.DetectorErrorModel | str | Path,
     checks: dict[str, CheckFn] | None = None,
+    *,
+    context: dict[str, bool | str] | None = None,
+    profile: str | None = None,
+    disabled_checks: list[str] | None = None,
+    allow_severity_downgrade: bool = False,
 ) -> Report:
     """Run checks against *source* and return a Report.
 
@@ -164,6 +179,23 @@ def check(
         could be ambiguous.
     checks:
         Dict of ``{name: check_fn}`` to run.  Defaults to ``ALL_CHECKS``.
+    context:
+        Applicability metadata (e.g. ``circuit_role``, ``complete_syndrome``).
+        A check whose required context is missing or whose declared circuit
+        role is unsupported returns an explicit skipped result instead of a
+        verdict; omissions are never silent.
+    profile:
+        Name of a profile from :data:`emlint.profiles.PROFILES`. When given
+        without *checks*, restricts the battery to the profile's enabled
+        checks and applies its context requirements.
+    disabled_checks:
+        Names of production checks excluded from the battery by user
+        configuration. Surfaced on the report so omissions are never silent;
+        they do not affect exit codes.
+    allow_severity_downgrade:
+        Opt-in permitting severity overrides (from profiles or explicit
+        selection) that downgrade deterministic checks to warning. Off by
+        default; a downgrade changes exit codes 1 -> 2.
 
     Raises
     ------
@@ -188,6 +220,29 @@ def check(
     """
     if checks is None:
         checks = ALL_CHECKS
+
+    profile_obj = None
+    if profile is not None:
+        from emlint.profiles import PROFILES
+
+        if profile not in PROFILES:
+            raise ValueError(
+                f"Unknown profile {profile!r}. Available: {', '.join(PROFILES)}."
+            )
+        profile_obj = PROFILES[profile]
+        if checks is ALL_CHECKS:
+            checks = {
+                name: ALL_CHECKS[name]
+                for name in profile_obj.enabled_checks
+                if name in ALL_CHECKS
+            }
+        elif not set(checks) <= set(profile_obj.enabled_checks):
+            raise ValueError(
+                f"checks {sorted(set(checks) - set(profile_obj.enabled_checks))} "
+                f"are outside profile {profile!r}; drop the profile or the "
+                "explicit check selection."
+            )
+    run_context = dict(context or {})
 
     if isinstance(source, stim.DetectorErrorModel):
         dem = source
@@ -241,7 +296,49 @@ def check(
             model, tuple(model.error_mechanisms), cache, validated=True
         )
     results = []
+    if model.unknown_instructions:
+        # Partial parse must never look like a clean pass: surface an explicit
+        # inconclusive result naming the unrepresentable instructions.
+        results.append(
+            PropertyResult(
+                name="partial_parse",
+                passed=False,
+                severity="warning",
+                message=(
+                    "inconclusive: DEM contains instructions emlint cannot "
+                    "represent; checks ran on a partial view: "
+                    + ", ".join(model.unknown_instructions)
+                ),
+                counter_example="unknown instruction types: "
+                + ", ".join(model.unknown_instructions),
+                counter_example_data={
+                    "unknown_instructions": list(model.unknown_instructions)
+                },
+                status="inconclusive",
+            )
+        )
+    applied_overrides: dict[str, str] = {}
+    profile_overrides = dict(profile_obj.severity_overrides) if profile_obj else {}
+    from emlint.profiles import _DETERMINISTIC_CHECKS, applicability_skip_reason
+
     for name, fn in checks.items():
+        skip_reason = applicability_skip_reason(name, run_context, profile_obj)
+        if skip_reason is not None:
+            # An error-severity check that cannot emit a verdict must surface as
+            # *inconclusive* (exit 2), never a plain skip: otherwise a profile
+            # run without its required context would let a DEM bug hide behind
+            # exit 0. Warning-severity checks keep the informational skip.
+            status = "inconclusive" if name in _DETERMINISTIC_CHECKS else "skipped"
+            results.append(
+                PropertyResult(
+                    name=name,
+                    passed=False,
+                    severity="warning",
+                    message=f"{status}: {skip_reason}",
+                    status=status,
+                )
+            )
+            continue
         is_exact_builtin = _is_optimized_builtin(name, fn)
         if is_exact_builtin:
             if use_flattened_path:
@@ -258,9 +355,31 @@ def check(
         else:
             assert cache is not None
             results.append(fn(_defensive_model(model, list(cache.get()))))
+        # Apply profile-declared severity overrides after the check ran.
+        # Downgrades are rejected here unless explicitly opted into via
+        # allow_severity_downgrade — the same gate the CLI enforces for config
+        # overrides. Profile authors who want a downgrade must declare it and
+        # callers must pass allow_severity_downgrade=True.
+        target = profile_overrides.get(name)
+        if target is not None:
+            from emlint.profiles import validate_severity_override
+
+            validate_severity_override(
+                name, target, allow_downgrade=allow_severity_downgrade
+            )
+            result = results[-1]
+            if result.status == "verdict":
+                applied_overrides[name] = result.severity
+                if target == "error":
+                    result.severity = "error"
+                else:
+                    result.severity = "warning"
     return Report(
         results=results,
         num_detectors=len(model.detectors),
         num_observables=len(model.observables),
         num_error_mechanisms=len(model.error_mechanisms),
+        disabled_checks=list(disabled_checks or []),
+        applied_overrides=applied_overrides,
+        unknown_instructions=list(model.unknown_instructions),
     )

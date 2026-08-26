@@ -20,7 +20,7 @@ from hypothesis import given
 import hypothesis.strategies as st
 
 from emlint.checks import _MAX_SHOWN, check_duplicates
-from emlint.model import ErrorModel
+from emlint.model import ErrorMechanism, ErrorModel
 from helpers import _mech, _model, assert_failed
 
 # ---------------------------------------------------------------------------
@@ -70,6 +70,24 @@ def test_passing_result_has_no_counter_example():
     m = _mech(0.1, detectors=frozenset({0}), observables=frozenset({0}))
     result = check_duplicates(_model(m))
     assert result.counter_example is None
+
+
+def test_decomposed_vs_plain_no_false_collision():
+    """A decomposed mechanism whose components share detectors must not collide
+    with an unrelated plain mechanism under the decoder-facing (union)
+    signature: `D0 D1 ^ D0` consumes as ({D0,D1}, {}), not ({D1}, {})."""
+    decomposed = ErrorMechanism(
+        probability=0.1,
+        detectors=frozenset({1}),  # XOR-folded merged view
+        observables=frozenset(),
+        decomposition_hints=(
+            (frozenset({0, 1}), frozenset()),
+            (frozenset({0}), frozenset()),
+        ),
+    )
+    plain = _mech(0.2, detectors=frozenset({1}))
+    result = check_duplicates(_model(decomposed, plain))
+    assert result.passed
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +152,55 @@ def test_xor_fold_three_entries_reported():
 
 
 # ---------------------------------------------------------------------------
+# Fused-probability severity contract (enhanced duplicates)
+# ---------------------------------------------------------------------------
+
+
+def test_structural_duplicates_only_remain_warning():
+    """Duplicate signatures are always warning severity — valid Stim output
+    legitimately produces coincident merged signatures."""
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset())
+    m1 = _mech(0.1, detectors=frozenset({0}), observables=frozenset())
+    result = check_duplicates(_model(m0, m1))
+    assert not result.passed
+    assert result.severity == "warning"
+
+
+def test_fused_probability_above_half_stays_warning():
+    """Even when a duplicate group's XOR-fused probability exceeds 0.5
+    (requires a contributing p > 0.5: 0.9 ⊕ 0.45 = 0.54), the finding stays a
+    warning — probability_bounds already flags the anomalous entry."""
+    m0 = _mech(0.9, detectors=frozenset({0}), observables=frozenset())
+    m1 = _mech(0.45, detectors=frozenset({0}), observables=frozenset())
+    result = assert_failed(check_duplicates(_model(m0, m1)))
+    assert result.severity == "warning"
+
+
+def test_decomposed_mechanisms_duplicate_at_merged_granularity():
+    """Two ^-decomposed mechanisms with identical merged signatures are
+    reported as duplicates at merged-signature granularity (warning).
+
+    error(0.001) D0 D2   (undecomposed)
+    error(0.001) D2 ^ D0 (components {D2}, {D0})
+
+    The counter-example data preserves both contributing mechanisms so
+    downstream tooling can inspect decomposition_hints for attribution.
+    """
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.001) D0 D2\nerror(0.001) D2 ^ D0\ndetector D0\ndetector D2"
+    )
+    model = from_stim_dem(dem)
+    result = assert_failed(check_duplicates(model))
+    assert not result.passed
+    assert result.severity == "warning"
+    # Provenance: every contributing mechanism appears in the structured data.
+    assert len(result.counter_example_data["mechanisms"]) == 2
+
+
+# ---------------------------------------------------------------------------
 # Multiple distinct duplicate groups
 # ---------------------------------------------------------------------------
 
@@ -149,7 +216,7 @@ def test_two_independent_duplicate_groups_counted():
     ]
     result = check_duplicates(_model(*mechs))
     assert not result.passed
-    assert "2" in result.message
+    assert "Found 2 duplicate mechanism signature(s)" in result.message
 
 
 def test_clean_mechanism_does_not_inflate_duplicate_count():
@@ -161,7 +228,26 @@ def test_clean_mechanism_does_not_inflate_duplicate_count():
     m2 = _mech(0.1, detectors=frozenset({1}), observables=frozenset())  # unique
     result = check_duplicates(_model(m0, m1, m2))
     assert not result.passed
-    assert "1" in result.message
+    assert "Found 1 duplicate mechanism signature(s)" in result.message
+
+
+def test_single_occurrence_signature_is_never_a_duplicate():
+    """A signature seen exactly once is not a duplicate even if it carries a
+    fused-probability state.
+
+    Guards the group-selection predicate (mutants: `> 1` → `>= 1`, or `and`
+    → `or`), which would flag every mechanism with non-None state as a
+    duplicate regardless of multiplicity.
+    """
+    # Three distinct signatures, each occurring exactly once.
+    mechs = [
+        _mech(0.9, detectors=frozenset({0}), observables=frozenset()),
+        _mech(0.45, detectors=frozenset({1}), observables=frozenset()),
+        _mech(0.3, detectors=frozenset({2}), observables=frozenset({0})),
+    ]
+    result = check_duplicates(_model(*mechs))
+    assert result.passed
+    assert result.counter_example is None
 
 
 def test_counter_example_data_not_truncated_when_counter_example_is():
@@ -305,6 +391,38 @@ def test_counter_example_data_two_groups_lists_all_mechanisms():
     result = check_duplicates(_model(*mechs))
     assert result.counter_example_data is not None
     assert len(result.counter_example_data["mechanisms"]) == 4
+
+
+def test_signature_count_scales_with_repeat_multiplicity():
+    """A duplicate signature inside an isolated REPEAT block recurs once per
+    iteration, each at a distinct shifted absolute detector location.
+
+    counter_example_data["signature_count"] and the message must report the
+    true number of distinct duplicate signatures across all iterations, not
+    just the count found in one representative iteration (regression test
+    for undercounting in the cross-scope symbolic fast path).
+    """
+    from emlint.model import RepeatBlock
+
+    body = (
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset()),
+        _mech(0.1, detectors=frozenset({0}), observables=frozenset()),
+    )
+    block = RepeatBlock(
+        body=body, count=3, detector_offset_per_iteration=10, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(30)), observables=set(), error_mechanisms=[block]
+    )
+    result = assert_failed(check_duplicates(model))
+    assert result.counter_example_data["signature_count"] == 3
+    assert "Found 3 duplicate mechanism signature(s)" in result.message
+    # Ground truth: flattening confirms 3 distinct duplicate signatures, one
+    # per repeat iteration (D0, D10, D20).
+    flattened = model.flattened()
+    signatures = [(m.detectors, m.observables) for m in flattened]
+    duplicate_signatures = {s for s in signatures if signatures.count(s) > 1}
+    assert len(duplicate_signatures) == 3
 
 
 # ---------------------------------------------------------------------------

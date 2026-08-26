@@ -48,6 +48,29 @@ class _CrossScopeReduction:
         tuple[frozenset[int], frozenset[int]], tuple[int, float, list[float] | None]
     ]
     conflicts: dict[frozenset[int], set[frozenset[int]]]
+    multiplicity: int = 1
+
+
+def _consumer_signature(
+    mechanism: ErrorMechanism,
+) -> tuple[frozenset[int], frozenset[int]]:
+    """Return the mechanism signature as downstream decoders consume it.
+
+    For decomposed mechanisms (``^``-separated components), decoder-facing
+    consumers such as sinter and pymatching treat each component as an
+    independent fault: detector symptoms merge by union of component sets,
+    while observable frame changes compose by XOR (firing both components of
+    ``D0 L0 ^ D1 L0`` flips L0 twice, i.e. not at all). For hand-written DEMs
+    whose components share detectors, the XOR-folded ``mechanism.detectors``
+    under-reports the syndrome; the union over decomposition_hints restores
+    it. Mechanisms without hints are returned unchanged.
+    """
+    if not mechanism.decomposition_hints:
+        return (mechanism.detectors, mechanism.observables)
+    dets: set[int] = set()
+    for cdets, _cobs in mechanism.decomposition_hints:
+        dets |= cdets
+    return (frozenset(dets), mechanism.observables)
 
 
 def _reduce_cross_scope_mechanisms(
@@ -61,7 +84,7 @@ def _reduce_cross_scope_mechanisms(
     conflicts: dict[frozenset[int], set[frozenset[int]]] = {}
 
     for mechanism in mechanisms:
-        signature = (mechanism.detectors, mechanism.observables)
+        signature = _consumer_signature(mechanism)
         state = signature_states.get(signature)
         if state is None:
             signature_states[signature] = (1, mechanism.probability, None)
@@ -78,25 +101,31 @@ def _reduce_cross_scope_mechanisms(
                 p_effective,
                 probabilities,
             )
-        existing = first_observable.get(mechanism.detectors)
+        existing = first_observable.get(signature[0])
         if existing is None:
-            first_observable[mechanism.detectors] = mechanism.observables
-        elif existing != mechanism.observables:
-            conflicts.setdefault(mechanism.detectors, {existing}).add(
-                mechanism.observables
-            )
+            first_observable[signature[0]] = signature[1]
+        elif existing != signature[1]:
+            conflicts.setdefault(signature[0], {existing}).add(signature[1])
 
     return _CrossScopeReduction(signature_states, conflicts)
 
 
 def _shift_mechanism(mechanism: ErrorMechanism, offset: int) -> ErrorMechanism:
-    """Return a mechanism with detector IDs translated by ``offset``."""
+    """Return a mechanism with detector IDs translated by ``offset``.
+
+    Decomposition-hint component detector IDs shift identically so hint
+    provenance stays consistent with the merged signature on repeat paths.
+    """
     if offset == 0:
         return mechanism
     return ErrorMechanism(
         probability=mechanism.probability,
         detectors=frozenset(d + offset for d in mechanism.detectors),
         observables=mechanism.observables,
+        decomposition_hints=tuple(
+            (frozenset(d + offset for d in cdets), cobs)
+            for cdets, cobs in mechanism.decomposition_hints
+        ),
     )
 
 
@@ -151,8 +180,13 @@ def _symbolic_cross_scope_reduction(
                 if left.detectors == right.detectors:
                     return None
 
-    return _reduce_cross_scope_mechanisms(
+    reduction = _reduce_cross_scope_mechanisms(
         _shift_mechanism(item, block.absolute_start_offset) for item in body
+    )
+    return _CrossScopeReduction(
+        signature_states=reduction.signature_states,
+        conflicts=reduction.conflicts,
+        multiplicity=block.count,
     )
 
 
@@ -312,30 +346,18 @@ def _origin_mechanisms(
     return result
 
 
-def _witness(scope: _ScopeMechanism) -> ErrorMechanism:
-    """Materialize the first absolute mechanism witness for a scope template."""
-    if scope.absolute_start == 0:
-        return scope.mechanism
-    return ErrorMechanism(
-        probability=scope.mechanism.probability,
-        detectors=frozenset(
-            d + scope.absolute_start for d in scope.mechanism.detectors
-        ),
-        observables=scope.mechanism.observables,
-    )
+def _template_multiplicity(template: _RepeatTemplate) -> int:
+    """Return how many concrete mechanism instances this template represents.
 
-
-def _template_witness(template: _RepeatTemplate) -> ErrorMechanism:
-    """Materialize the first iteration witness for a repeat-body template."""
-    if template.absolute_start == 0:
-        return template.mechanism
-    return ErrorMechanism(
-        probability=template.mechanism.probability,
-        detectors=frozenset(
-            d + template.absolute_start for d in template.mechanism.detectors
-        ),
-        observables=template.mechanism.observables,
-    )
+    A repeat-body template is walked once per body position, not once per
+    absolute instance (see _iter_repeat_templates). The actual number of
+    flattened mechanism instances it stands for is the product of the repeat
+    counts of every enclosing axis (1 for a template with no enclosing repeat).
+    """
+    total = 1
+    for count, _stride in template.repeat_axes:
+        total *= count
+    return total
 
 
 def _det_label(d: int, coords: dict[int, tuple[float, ...]]) -> str:
@@ -380,14 +402,25 @@ def check_detectability(
     was flipped; that stronger guarantee is checked by check_correctability.
 
     Property: ∀m ∈ mechanisms, obs(m) ≠ ∅ → det(m) ≠ ∅
+
+    Note: violating mechanisms have an empty detector set by definition, so
+    counter-examples name observables only; coordinate-annotated detector
+    labels (as used by sensitivity/duplicates/correctability) do not apply.
     """
-    violations = [
-        _template_witness(template)
+    violating_templates = [
+        template
         for template in _iter_repeat_templates(model)
         if not template.mechanism.detectors and template.mechanism.observables
     ]
 
-    if violations:
+    if violating_templates:
+        violations = [
+            _shift_mechanism(template.mechanism, template.absolute_start)
+            for template in violating_templates
+        ]
+        total_instances = sum(
+            _template_multiplicity(template) for template in violating_templates
+        )
         lines = []
         for mech in violations[:max_shown]:
             obs_str = ", ".join(f"L{o}" for o in sorted(mech.observables))
@@ -402,9 +435,15 @@ def check_detectability(
             name="detectability",
             passed=False,
             severity="error",
-            message=f"Found {len(violations)} undetectable error mechanism(s) that flip observable(s).",
+            message=(
+                f"Found {total_instances} undetectable error mechanism instance(s) "
+                f"across {len(violations)} distinct location(s) that flip observable(s)."
+            ),
             counter_example=counter,
-            counter_example_data={"mechanisms": [_format_mech(m) for m in violations]},
+            counter_example_data={
+                "mechanisms": [_format_mech(m) for m in violations],
+                "instance_count": total_instances,
+            },
         )
 
     return PropertyResult(
@@ -600,20 +639,24 @@ def check_probability_bounds(
 
     Property: ∀m ∈ mechanisms, 0 < p(m) ≤ 0.5  (and p(m) ∉ {NaN, −∞, +∞})
     """
-    violations = [
-        _template_witness(template)
+    violating_templates = [
+        template
         for template in _iter_repeat_templates(model)
         if math.isnan(template.mechanism.probability)
         or not (0.0 < template.mechanism.probability <= 0.5)
     ]
-    if violations:
+    if violating_templates:
+        violations = [
+            _shift_mechanism(template.mechanism, template.absolute_start)
+            for template in violating_templates
+        ]
         lines: list[str] = []
         tag_counts: Counter[str] = Counter()
         has_unphysical = False
-        for mech in violations:
+        for template, mech in zip(violating_templates, violations):
             p = mech.probability
             tag, hint = _prob_label(p)
-            tag_counts[tag] += 1
+            tag_counts[tag] += _template_multiplicity(template)
             if tag in _UNPHYSICAL_TAGS:
                 has_unphysical = True
             if len(lines) < max_shown:
@@ -625,15 +668,23 @@ def check_probability_bounds(
         counter = "; ".join(lines)
         if len(violations) > max_shown:
             counter += f" (and {len(violations) - max_shown} more)"
+        total_instances = sum(tag_counts.values())
         parts = [f"{n} with {tag}" for tag, n in tag_counts.items()]
 
         return PropertyResult(
             name="probability_bounds",
             passed=False,
             severity="error" if has_unphysical else "warning",
-            message=f"Found {len(violations)} error mechanism(s) with out-of-range probability ({', '.join(parts)}).",
+            message=(
+                f"Found {total_instances} error mechanism instance(s) across "
+                f"{len(violations)} distinct location(s) with out-of-range "
+                f"probability ({', '.join(parts)})."
+            ),
             counter_example=counter,
-            counter_example_data={"mechanisms": [_format_mech(m) for m in violations]},
+            counter_example_data={
+                "mechanisms": [_format_mech(m) for m in violations],
+                "instance_count": total_instances,
+            },
         )
 
     return PropertyResult(
@@ -652,12 +703,26 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     assume independence miscalculate likelihoods. The correct XOR-fold over n
     occurrences is iterated: p_eff = p1 ⊕ p2 ⊕ … where a ⊕ b = a(1-b) + b(1-a).
 
+
+    Note on fused probabilities: the XOR-fold of probabilities that are all
+    ≤ 0.5 never exceeds 0.5 (f(p,q) = p+q−2pq is maximized at (0.5, 0.5) =
+    0.5, preserved under further folds by induction). A duplicate group whose
+    fold exceeds 0.5 therefore always contains a probability above 0.5,
+    which `probability_bounds` already flags as anomalous — no separate
+    severity gate is needed here.
+
+    Note on decomposed mechanisms: for ``^``-separated error instructions the
+    signature compared here is the union over decomposition components (the
+    decoder-facing view), not the raw XOR-folded target list, so that distinct
+    decompositions do not collide with unrelated mechanisms.
+
     Property: ∀m, m' ∈ mechanisms, m ≠ m' → (det(m), obs(m)) ≠ (det(m'), obs(m'))
               i.e., the signature map m ↦ (det(m), obs(m)) is injective.
     """
+    reduction = _cross_scope_reduction(model)
     duplicates = {
         signature: state[2]
-        for signature, state in _cross_scope_reduction(model).signature_states.items()
+        for signature, state in reduction.signature_states.items()
         if state[0] > 1 and state[2] is not None
     }
     if not duplicates:
@@ -690,12 +755,14 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         tgt_str = f" {tgt}" if tgt else ""
         for p in probs:
             all_dup_mechs.append(f"error({p}){tgt_str}")
+    total_duplicate_signatures = len(duplicates) * reduction.multiplicity
     return PropertyResult(
         name="duplicates",
         passed=False,
         severity="warning",
         message=(
-            f"Found {len(duplicates)} duplicate mechanism signature(s). "
+            f"Found {total_duplicate_signatures} duplicate mechanism signature(s) "
+            f"across {len(duplicates)} distinct location(s). "
             f"The same fault path appears more than once in the DEM, which "
             f"typically happens when sub-circuit DEMs are concatenated without "
             f"merging coincident mechanisms. Duplicate probabilities should be "
@@ -703,7 +770,10 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"not left as separate entries."
         ),
         counter_example=counter,
-        counter_example_data={"mechanisms": all_dup_mechs},
+        counter_example_data={
+            "mechanisms": all_dup_mechs,
+            "signature_count": total_duplicate_signatures,
+        },
     )
 
 
@@ -731,8 +801,13 @@ def check_correctability(
     cases where two mechanisms, when they co-occur, produce a combined syndrome
     that maps to conflicting observable corrections — that is the code distance
     problem and is in general NP-hard to verify.
+
+    Note on decomposed mechanisms: syndromes are compared using the union over
+    ``^``-decomposition components (the decoder-facing view), not the raw
+    XOR-folded target list, matching how sinter/pymatching consume components.
     """
-    conflicts = _cross_scope_reduction(model).conflicts
+    reduction = _cross_scope_reduction(model)
+    conflicts = reduction.conflicts
     # A conflict occurs when a syndrome (detector set) maps to more than one distinct observable set,
     # i.e. there exist at least two mechanisms m and m' such that det(m) = det(m') but obs(m) ≠ obs(m').
     if conflicts:
@@ -784,19 +859,21 @@ def check_correctability(
                     "witnesses": witnesses,
                 }
             )
+        total_conflicts = len(conflicts) * reduction.multiplicity
         return PropertyResult(
             name="correctability",
             passed=False,
             severity="warning",
             message=(
-                f"Found {len(conflicts)} syndrome(s) that map to more than one distinct "
+                f"Found {total_conflicts} syndrome(s) across {len(conflicts)} "
+                f"distinct location(s) that map to more than one distinct "
                 f"observable set. The decoder cannot determine which logical observable "
                 f"was flipped from the measurement outcome alone."
             ),
             counter_example=counter,
             counter_example_data={
                 "conflicts": conflicts_list,
-                "total_conflicts": len(conflicts),
+                "total_conflicts": total_conflicts,
                 "witnesses_truncated": len(conflicts) > max_shown,
             },
         )

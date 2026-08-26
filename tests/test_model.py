@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from hypothesis import given
+import hypothesis.strategies as st
 
 from emlint.model import ErrorMechanism, RepeatBlock, ErrorModel
 
@@ -216,6 +218,102 @@ def test_iter_flattened_matches_flattened_in_order_for_repeat_edges():
         ],
     )
     assert list(model.iter_flattened()) == model.flattened()
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis: property-based tests
+# ---------------------------------------------------------------------------
+
+
+@st.composite
+def _hint_models(draw):
+    """Models whose mechanisms may carry decomposition hints."""
+    n_components = draw(st.integers(min_value=0, max_value=3))
+    hints = []
+    merged_dets: set[int] = set()
+    merged_obs: set[int] = set()
+    for _ in range(n_components):
+        cdets = draw(st.frozensets(st.integers(0, 8)))
+        cobs = draw(st.frozensets(st.integers(0, 3)))
+        hints.append((cdets, cobs))
+        # XOR-fold merge: a detector appearing in an even number of components
+        # cancels out of the merged signature.
+        for d in cdets:
+            if d in merged_dets:
+                merged_dets.discard(d)
+            else:
+                merged_dets.add(d)
+        for o in cobs:
+            if o in merged_obs:
+                merged_obs.discard(o)
+            else:
+                merged_obs.add(o)
+    mech = ErrorMechanism(
+        probability=draw(st.floats(min_value=1e-4, max_value=0.5)),
+        detectors=frozenset(merged_dets),
+        observables=frozenset(merged_obs),
+        decomposition_hints=tuple(hints),
+    )
+    return ErrorModel(
+        detectors=set(range(12)),
+        observables=set(range(4)),
+        error_mechanisms=[mech],
+    )
+
+
+@given(model=_hint_models())
+def test_flattened_preserves_decomposition_hints_when_offset_zero(model):
+    """flattened() with scope offset 0 must return hints unchanged."""
+    flat = model.flattened()
+    assert len(flat) == 1
+    original = model.error_mechanisms[0]
+    assert flat[0].decomposition_hints == original.decomposition_hints
+
+
+@given(model=_hint_models(), offset=st.integers(min_value=1, max_value=10))
+def test_flattened_shifts_hint_detector_ids_by_scope_offset(model, offset):
+    """Component detector IDs shift by the same scope offset as merged IDs;
+    observable IDs are never shifted. Uses count=2 so iteration 1 exercises
+    the k*stride offset term."""
+    block = RepeatBlock(
+        body=tuple(model.error_mechanisms),
+        count=2,
+        detector_offset_per_iteration=offset,
+        absolute_start_offset=0,
+    )
+    shifted = ErrorModel(
+        detectors=model.detectors,
+        observables=model.observables,
+        error_mechanisms=[block],
+    )
+    flat = shifted.flattened()
+    assert len(flat) == 2
+    mech = model.error_mechanisms[0]
+    for k in range(2):
+        scope_offset = k * offset
+        expected_hints = tuple(
+            (
+                frozenset(d + scope_offset for d in cdets),
+                cobs,
+            )
+            for cdets, cobs in mech.decomposition_hints
+        )
+        assert flat[k].decomposition_hints == expected_hints
+        assert flat[k].detectors == frozenset(d + scope_offset for d in mech.detectors)
+
+
+@given(model=_hint_models())
+def test_merged_signature_is_xor_fold_of_component_signatures(model):
+    """The merged signature equals the XOR fold of component signatures —
+    this is exactly the stim semantic the frontend must preserve."""
+    mech = model.error_mechanisms[0]
+    merged_dets: set[int] = set()
+    merged_obs: set[int] = set()
+    for cdets, cobs in mech.decomposition_hints:
+        merged_dets ^= set(cdets)
+        merged_obs ^= set(cobs)
+    assert mech.detectors == frozenset(merged_dets)
+    assert mech.observables == frozenset(merged_obs)
 
 
 def test_flattened_distribution_with_mixed_content():

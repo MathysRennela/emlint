@@ -3,6 +3,27 @@
 User-visible changes to emlint. 
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-08-26
+
+Incremental feature and hardening release: CLI/output-format features, project-level configuration, applicability profiles, and validation hardening. No new production checks; no changes to the public check API, severities, or exit-code semantics.
+
+### Added
+
+- `--only NAMES` / `--ignore NAMES` check selection on the CLI (`--check` retained as a backward-compatible alias for `--only`; passing both is rejected).
+- `--format sarif`: SARIF 2.1.0 output. Every check becomes a rule; only failed checks become results.
+- Project-level configuration: the nearest `pyproject.toml` may contain a `[tool.emlint]` table with keys `only`, `ignore`, `format`, and `severity`. Command-line options override project settings.
+- Applicability profiles (`emlint/profiles.py`) via `--profile`/`--context` on the CLI, `[tool.emlint] profile`/`context` keys, and `emlint.check(..., context=..., profile=...)`. Initial profiles: `strict-dem`, `graphlike-decoder`, `surface-code-circuit`, `subsystem-code`. Opt-in: with no declared context or profile, behavior is unchanged.
+- `PropertyResult.status` reports disabled, skipped, and inconclusive checks explicitly. Skipped/inconclusive results are visible in text and JSON, excluded from SARIF, and exit-code neutral (the 0/1/2 contract is preserved).
+- Repeat-aware diagnostics: `detectability`, `probability_bounds`, `duplicates`, and `correctability` report expanded instance counts (with `instance_count` / `signature_count` in `counter_example_data`). Verdicts are unchanged.
+- Frontend: `ErrorMechanism.decomposition_hints` preserves `^`-separated decomposition components from Stim DEMs.
+- Experimental: `hook_errors` and `bulk_temporal_span` warning heuristics; stdlib-only graph helpers replacing the undeclared `networkx` dependency in `experimental/checks.py`. Distance-certificate prototypes (`experimental/boundary_signatures.py`, `experimental/css_boundary_signatures.py`) are research artifacts, not shipped checks.
+- Validation corpus: stim-generated DEMs pinned by manifest hashes with a byte-reproducibility guard test (`tests/test_corpus_regenerable.py`); external-library DEMs and manifests tracked under `notes/audits/validation/raw/dems/`.
+
+### Changed
+
+- `duplicates` findings (structural and fused) are uniformly `warning` severity.
+- CI matrix and tag-triggered release workflow added (`.github/workflows/ci.yml`, `.github/workflows/release.yml`); non-blocking lint workflow over the regression corpus.
+
 ## [0.2.0] — 2026-08-06
 
 This version includes optimization to the existing checks, affecting performance relative to v0.1.2. A conscious choice was made to favour speeding up large DEMs at the cost of some overhead for small DEMs.
@@ -81,6 +102,7 @@ Initial release with six production checks:
 The CLI supports text/JSON output, check selection, severity filtering, and
 exit codes `0` (pass), `1` (error), and `2` (warnings only).
 
+[0.2.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.0
 [0.1.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.2
 [0.1.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.1

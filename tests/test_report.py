@@ -11,7 +11,13 @@ from hypothesis import given
 import hypothesis.strategies as st
 
 from emlint.checks import _xor_fold
-from emlint.report import PropertyResult, Report, format_json, format_text
+from emlint.report import (
+    PropertyResult,
+    Report,
+    format_json,
+    format_sarif,
+    format_text,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -216,6 +222,23 @@ def test_format_json_has_errors_true_for_error_severity():
 
 
 # ---------------------------------------------------------------------------
+# format_sarif
+# ---------------------------------------------------------------------------
+
+
+def test_format_sarif_is_valid_sarif():
+    data = json.loads(format_sarif(_report(_failed("detectability"))))
+    assert data["version"] == "2.1.0"
+    assert len(data["runs"]) == 1
+    assert data["runs"][0]["results"][0]["ruleId"] == "detectability"
+
+
+def test_format_sarif_reports_only_failures():
+    data = json.loads(format_sarif(_report(_passed(), _failed("sensitivity"))))
+    assert [r["ruleId"] for r in data["runs"][0]["results"]] == ["sensitivity"]
+
+
+# ---------------------------------------------------------------------------
 # Report.all_passed / has_errors / has_warnings — direct unit tests
 # ---------------------------------------------------------------------------
 
@@ -262,3 +285,72 @@ def test_has_warnings_true_when_warning_severity_fails():
 
 def test_has_warnings_false_when_only_error_fails():
     assert not _report(_failed("completeness", severity="error")).has_warnings()
+
+
+# ---------------------------------------------------------------------------
+# Non-verdict statuses (skipped / inconclusive) in formatters
+# ---------------------------------------------------------------------------
+
+
+def _skipped(name: str = "detectability") -> PropertyResult:
+    return PropertyResult(
+        name=name,
+        passed=True,
+        severity="error",
+        message="skipped: missing required context: complete_syndrome",
+        status="skipped",
+    )
+
+
+def _inconclusive(name: str = "distance") -> PropertyResult:
+    return PropertyResult(
+        name=name,
+        passed=True,
+        severity="warning",
+        message="inconclusive: lower bound below target without witness",
+        status="inconclusive",
+    )
+
+
+def test_format_text_marks_skipped_explicitly():
+    text = format_text(_report(_skipped()))
+    assert "[skipped]" in text
+    assert "detectability" in text
+    assert "✓" not in text.split("detectability")[0].splitlines()[-1]
+
+
+def test_format_text_marks_inconclusive_explicitly():
+    text = format_text(_report(_inconclusive()))
+    assert "[inconclusive]" in text
+    assert "distance" in text
+
+
+def test_format_json_includes_status_field():
+    data = json.loads(format_json(_report(_passed(), _skipped(), _inconclusive())))
+    statuses = {r["name"]: r["status"] for r in data["results"]}
+    assert statuses["completeness"] == "verdict"
+    assert statuses["detectability"] == "skipped"
+    assert statuses["distance"] == "inconclusive"
+
+
+def test_skipped_does_not_affect_exit_code_semantics():
+    report = _report(_skipped())
+    assert report.all_passed()
+    assert not report.has_errors()
+    assert not report.has_warnings()
+
+
+def test_inconclusive_does_not_affect_exit_code_semantics():
+    report = _report(_inconclusive())
+    assert report.all_passed()
+    assert not report.has_errors()
+    assert not report.has_warnings()
+
+
+def test_sarif_excludes_non_verdict_results():
+    """SARIF results carry findings; skipped/inconclusive are not findings."""
+    data = json.loads(
+        format_sarif(_report(_failed("duplicates"), _skipped(), _inconclusive()))
+    )
+    rule_ids = [r["ruleId"] for r in data["runs"][0]["results"]]
+    assert rule_ids == ["duplicates"]

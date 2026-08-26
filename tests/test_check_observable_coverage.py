@@ -128,6 +128,30 @@ def test_truncation_message_when_many_uncovered_observables():
     assert "more" in result.counter_example
 
 
+def test_truncation_boundary_exactly_max_shown_has_no_overflow():
+    """Exactly _MAX_SHOWN uncovered observables must render all, no overflow.
+
+    Guards the off-by-one at the truncation boundary (mutants: `>` → `>=`,
+    `-` → `+` in the overflow count).
+    """
+    n = _MAX_SHOWN
+    model = ErrorModel(detectors=set(), observables=set(range(n)), error_mechanisms=[])
+    result = assert_failed(check_observable_coverage(model))
+    assert not result.passed
+    assert "more" not in result.counter_example
+    assert f"L{n - 1}" in result.counter_example
+
+
+def test_passing_message_states_the_invariant():
+    """The passing message must state the verified invariant (mutant:
+    passing-path `message=None` — a silent pass)."""
+    m = _mech(0.1, observables=frozenset({0}))
+    result = check_observable_coverage(_model(m))
+    assert result.passed
+    assert result.message
+    assert "observable" in result.message.lower()
+
+
 # ---------------------------------------------------------------------------
 # Counter-example format
 # ---------------------------------------------------------------------------
@@ -145,7 +169,7 @@ def test_message_contains_violation_count():
     model = ErrorModel(detectors=set(), observables={0, 1, 2}, error_mechanisms=[])
     result = check_observable_coverage(model)
     assert not result.passed
-    assert "3" in result.message
+    assert "3 logical observable(s) are never flipped" in result.message
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +242,24 @@ def test_counter_example_data_excludes_covered_observables():
     model = ErrorModel(detectors=set(), observables={0, 1}, error_mechanisms=[m])
     result = assert_failed(check_observable_coverage(model))
     assert result.counter_example_data["observables"] == [1]
+
+
+def test_repeat_block_observables_are_covered_across_iterations():
+    """An observable flipped inside a REPEAT body counts as covered — the
+    check must see through the repeat structure, not just top-level
+    mechanisms (regression test for repeat-blind coverage)."""
+    from emlint.model import RepeatBlock
+
+    body = (_mech(0.1, detectors=frozenset({0}), observables=frozenset({0})),)
+    block = RepeatBlock(
+        body=body, count=3, detector_offset_per_iteration=1, absolute_start_offset=0
+    )
+    model = ErrorModel(detectors={0, 1, 2}, observables={0}, error_mechanisms=[block])
+    result = check_observable_coverage(model)
+    assert result.passed
+    assert result.name == "observable_coverage"
+    assert result.severity == "error"
+    assert result.counter_example is None
 
 
 # ---------------------------------------------------------------------------

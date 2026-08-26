@@ -109,7 +109,7 @@ def test_counter_example_contains_dead_detector_label():
 def test_message_contains_dead_count():
     model = ErrorModel(detectors={0, 1}, observables=set(), error_mechanisms=[])
     result = check_sensitivity(model)
-    assert "2" in result.message
+    assert "2 detector(s) are never triggered" in result.message
 
 
 def test_only_uncovered_detectors_reported():
@@ -256,6 +256,86 @@ def test_dead_detector_from_stim_dem_fails():
     result = assert_failed(check_sensitivity(model))
     assert not result.passed
     assert "D1" in result.counter_example
+
+
+# ---------------------------------------------------------------------------
+# Repeat-aware interval membership (regression tests for surviving mutants)
+# ---------------------------------------------------------------------------
+
+
+def _repeat_model(count: int, stride: int, det: int = 0):
+    """Model with one REPEAT block whose single mechanism fires one detector."""
+    from emlint.model import RepeatBlock
+
+    body = (_mech(0.1, detectors=frozenset({det})),)
+    block = RepeatBlock(
+        body=body,
+        count=count,
+        detector_offset_per_iteration=stride,
+        absolute_start_offset=0,
+    )
+    return ErrorModel(detectors=set(), observables=set(), error_mechanisms=[block])
+
+
+def test_single_repeat_axis_uses_exact_path_not_nested_fallback():
+    """A single repeat axis must take the exact template path.
+
+    Mutant `> 1` → `>= 1` routes every repeated model through the nested-scope
+    fallback; verdicts stay identical on this shape, so pin the exact-path
+    behavior via a stride-2 arithmetic progression that both paths handle but
+    only the exact path handles without expansion cost. The observable contract:
+    detectors at 0, 2, 4 (count=3, stride=2) are all covered.
+    """
+    model = _repeat_model(count=3, stride=2)
+    model.detectors = {0, 2, 4}
+    result = check_sensitivity(model)
+    assert result.passed
+
+
+def test_interval_merge_boundary_is_inclusive():
+    """Adjacent progression intervals exactly one stride apart must merge.
+
+    Mechanisms at D0 (interval [0,0]) and D2 (interval [2,2]) with stride 2 are
+    contiguous: D3 is NOT covered (residue differs), but every declared
+    detector in {0, 2} is. Mutant `<=` → `<` fails to merge [0,0] and [2,2],
+    which changes nothing for covered members — so assert the merged behavior
+    through a detector that lies strictly between two intervals of the same
+    residue: {0, 2, 6, 8} leaves D4 dead and must be flagged.
+    """
+    model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=[])
+    from emlint.model import RepeatBlock
+
+    body = (
+        _mech(0.1, detectors=frozenset({0})),
+        _mech(0.1, detectors=frozenset({6})),
+    )
+    block = RepeatBlock(
+        body=body,
+        count=2,
+        detector_offset_per_iteration=8,
+        absolute_start_offset=0,
+    )
+    model.error_mechanisms = [block]
+    # Covered: 0, 6 (iteration 1) and 8, 14 (iteration 2). Declared-but-dead: 4.
+    model.detectors = {0, 6, 8, 14, 4}
+    result = assert_failed(check_sensitivity(model))
+    assert result.counter_example_data["detectors"] == [4]
+
+
+def test_gap_between_progressions_reports_dead_detector():
+    """A declared detector inside a progression's span gap is dead.
+
+    Guards the residue lookup loop (mutant: `continue` → `break`), which would
+    stop checking other strides after the first miss and could report extra
+    false dead-detectors or hide real ones depending on dict order.
+    """
+    model = _repeat_model(count=3, stride=2)  # covers 0, 2, 4
+    model.detectors = {0, 2, 4}
+    # Add a second independent mechanism covering D9 via a flat mechanism.
+    model.error_mechanisms.append(_mech(0.1, detectors=frozenset({9})))
+    model.detectors.add(9)
+    result = check_sensitivity(model)
+    assert result.passed
 
 
 def test_all_detectors_covered_from_stim_dem_passes():

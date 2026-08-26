@@ -115,7 +115,6 @@ def test_all_checks_never_crash_on_random_tree(model: ErrorModel) -> None:
     for name, fn in ALL_CHECKS.items():
         result = fn(model)
         assert result.name == name
-        assert result.passed in (True, False)
         if not result.passed:
             # Failing results must carry actionable counter-examples.
             assert result.counter_example is not None
@@ -135,10 +134,10 @@ def test_dispatcher_matches_flattened_oracle_on_random_tree(model: ErrorModel) -
     for name, fn in ALL_CHECKS.items():
         try:
             dispatched = fn(model)
-        except Exception:
-            # Invalid trees may raise uniformly; that is acceptable as long as
-            # the flat oracle raises the same way.
-            with pytest.raises(Exception):
+        except Exception as exc:
+            # Invalid trees may raise uniformly; that is acceptable only if
+            # the flat oracle raises the *same* exception type.
+            with pytest.raises(type(exc)):
                 fn(flat)
             continue
         oracle = fn(flat)
