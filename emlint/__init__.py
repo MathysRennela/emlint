@@ -319,23 +319,27 @@ def check(
         )
     applied_overrides: dict[str, str] = {}
     profile_overrides = dict(profile_obj.severity_overrides) if profile_obj else {}
-    from emlint.profiles import _DETERMINISTIC_CHECKS, applicability_skip_reason
+    from emlint.profiles import applicability_skip
 
     for name, fn in checks.items():
-        skip_reason = applicability_skip_reason(name, run_context, profile_obj)
-        if skip_reason is not None:
-            # An error-severity check that cannot emit a verdict must surface as
-            # *inconclusive* (exit 2), never a plain skip: otherwise a profile
-            # run without its required context would let a DEM bug hide behind
-            # exit 0. Warning-severity checks keep the informational skip.
-            status = "inconclusive" if name in _DETERMINISTIC_CHECKS else "skipped"
+        skip = applicability_skip(name, run_context, profile_obj)
+        if skip is not None:
+            # A declared unsupported circuit role reports a plain exit-neutral
+            # skip (the user affirmatively declared the DEM's domain). Missing
+            # required context on an error-severity check surfaces as
+            # *inconclusive* (exit 2), never a silent skip: a profile run
+            # without its required context must not let a DEM bug hide behind
+            # exit 0. applicability_skip() assigns the status; the result
+            # carries the matching severity so Report.has_errors/has_warnings
+            # can apply the 0/1/2 contract.
+            skip_reason, skip_status = skip
             results.append(
                 PropertyResult(
                     name=name,
                     passed=False,
-                    severity="warning",
-                    message=f"{status}: {skip_reason}",
-                    status=status,
+                    severity="error" if skip_status == "inconclusive" else "warning",
+                    message=f"{skip_status}: {skip_reason}",
+                    status=skip_status,
                 )
             )
             continue
@@ -355,6 +359,12 @@ def check(
         else:
             assert cache is not None
             results.append(fn(_defensive_model(model, list(cache.get()))))
+        if name == "duplicates":
+            # The dem_assembly context gate selects the duplicates claim that
+            # matches what the caller knows about the DEM's origin
+            from emlint.checks import apply_duplicates_dem_assembly
+
+            apply_duplicates_dem_assembly(results[-1], run_context.get("dem_assembly"))
         # Apply profile-declared severity overrides after the check ran.
         # Downgrades are rejected here unless explicitly opted into via
         # allow_severity_downgrade — the same gate the CLI enforces for config

@@ -19,7 +19,7 @@ import pytest
 from hypothesis import given
 import hypothesis.strategies as st
 
-from emlint.checks import _MAX_SHOWN, check_duplicates
+from emlint.checks import _MAX_SHOWN, ALL_CHECKS, check_duplicates
 from emlint.model import ErrorMechanism, ErrorModel
 from helpers import _mech, _model, assert_failed
 
@@ -453,3 +453,94 @@ def test_distinct_mechanisms_from_stim_dem_passes():
     )
     model = from_stim_dem(dem)
     assert check_duplicates(model).passed
+
+
+def test_signature_collision_message_on_canonical_stim_dem():
+    """Regression pin (rescope option A): the canonical stim-generated
+    surface-code DEM trips signature injectivity with the honest
+    both-hypotheses message — expected behavior, not a bug."""
+    import stim
+
+    dem = stim.Circuit.generated(
+        "surface_code:rotated_memory_x",
+        distance=3,
+        rounds=3,
+        after_clifford_depolarization=0.001,
+    ).detector_error_model(decompose_errors=True)
+    result = check_duplicates(_model_from_stim(dem))
+    assert not result.passed
+    assert "signature collision" in result.message
+    assert "concatenating sub-circuit DEMs" in result.message
+    assert result.counter_example_data["location_count"] >= 1
+    assert (
+        result.counter_example_data["signature_count"]
+        >= result.counter_example_data["location_count"]
+    )
+
+
+def _model_from_stim(dem):
+    from emlint.frontends import from_stim_dem
+
+    return from_stim_dem(dem)
+
+
+def test_dem_assembly_gate_selects_message_variant():
+    import emlint
+
+    dem = "error(0.1) D0 L0\nerror(0.2) D0 L0\ndetector D0"
+    default = emlint.check(dem, checks={"duplicates": ALL_CHECKS["duplicates"]})
+    mono = emlint.check(
+        dem,
+        checks={"duplicates": ALL_CHECKS["duplicates"]},
+        context={"dem_assembly": "monolithic"},
+    )
+    concat = emlint.check(
+        dem,
+        checks={"duplicates": ALL_CHECKS["duplicates"]},
+        context={"dem_assembly": "concatenated"},
+    )
+    d = next(r for r in default.results if r.name == "duplicates")
+    m = next(r for r in mono.results if r.name == "duplicates")
+    c = next(r for r in concat.results if r.name == "duplicates")
+    assert "signature collision" in d.message
+    assert "usually benign" in m.message
+    assert "concatenated without merging" in c.message
+    assert m.counter_example == d.counter_example
+    assert c.counter_example_data == d.counter_example_data
+
+
+def test_dem_assembly_monolithic_message_hint_consistent():
+    """Regression (red-team v0.2.2): under dem_assembly=monolithic the message
+    claims the finding is benign, so the message must not retain the XOR-fold
+    imperative and the hint must not still assert the concatenation hypothesis.
+    Under concatenated the hint from check_duplicates already matches and must
+    be left unchanged."""
+    import emlint
+
+    dem = "error(0.1) D0 L0\nerror(0.2) D0 L0\ndetector D0"
+    default = emlint.check(dem, checks={"duplicates": ALL_CHECKS["duplicates"]})
+    mono = emlint.check(
+        dem,
+        checks={"duplicates": ALL_CHECKS["duplicates"]},
+        context={"dem_assembly": "monolithic"},
+    )
+    concat = emlint.check(
+        dem,
+        checks={"duplicates": ALL_CHECKS["duplicates"]},
+        context={"dem_assembly": "concatenated"},
+    )
+    d = next(r for r in default.results if r.name == "duplicates")
+    m = next(r for r in mono.results if r.name == "duplicates")
+    c = next(r for r in concat.results if r.name == "duplicates")
+
+    # Monolithic: benign claim, no contradictory fix imperative, hint rewritten.
+    assert "usually benign" in m.message
+    assert "XOR-fold" not in m.message
+    assert "not left as separate entries" not in m.message
+    assert m.hint is not None
+    assert m.hint.startswith("Hypothesis:")
+    assert "concatenated without" not in m.hint
+
+    # Concatenated: XOR instruction kept, hint unchanged from the default.
+    assert "XOR-folded" in c.message
+    assert c.hint == d.hint

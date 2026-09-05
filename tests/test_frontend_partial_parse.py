@@ -177,10 +177,12 @@ def test_partial_parse_is_never_a_clean_pass(monkeypatch: pytest.MonkeyPatch) ->
     assert partial.counter_example is not None
     assert partial.counter_example_data is not None
     assert "adaptive_metadata" in partial.message
-    # The report is no longer clean.
-    assert not report.all_passed()
-    assert report.any_skipped
+    # The report is no longer clean: the inconclusive partial-parse result
+    # drives exit 2 (has_warnings). all_passed is exit-code neutral for
+    # non-verdict results, so the exit-2 signal lives on has_warnings.
     assert report.has_warnings()
+    assert not report.has_errors()
+    assert report.any_skipped
 
 
 def test_clean_parse_has_no_partial_parse_result() -> None:

@@ -444,6 +444,13 @@ def check_detectability(
                 "mechanisms": [_format_mech(m) for m in violations],
                 "instance_count": total_instances,
             },
+            hint=(
+                "Hypothesis: an observable flip with no detector syndrome often "
+                "comes from a fault path after the last stabilizer-measurement "
+                "round, or from a data-qubit region whose measurement is not "
+                "wrapped in a DETECTOR; inspect the circuit region between the "
+                "fault location and the observable's final measurement."
+            ),
         )
 
     return PropertyResult(
@@ -548,6 +555,13 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
             message=f"{len(dead)} detector(s) are never triggered by any error mechanism.",
             counter_example=counter,
             counter_example_data={"detectors": dead},
+            hint=(
+                "Hypothesis: a detector no mechanism ever triggers is either "
+                "miswired or redundant. Expected shape: at least one mechanism "
+                "per stabilizer check per round; look for a missing noise "
+                "instruction on the gates feeding this detector, or a DETECTOR "
+                "declared on a comparison that never receives a fault."
+            ),
         )
 
     return PropertyResult(
@@ -698,10 +712,15 @@ def check_probability_bounds(
 def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> PropertyResult:
     """Flag error mechanisms that share the same (detectors, observables) signature.
 
-    When a DEM is assembled from sub-circuits or boundary conditions, the same
-    fault path can be counted twice instead of being XOR-fused. Decoders that
-    assume independence miscalculate likelihoods. The correct XOR-fold over n
-    occurrences is iterated: p_eff = p1 ⊕ p2 ⊕ … where a ⊕ b = a(1-b) + b(1-a).
+    The property checked is signature injectivity. On multi-round circuit-level
+    DEMs this property is routinely violated by *correct* DEMs: distinct
+    physical fault locations legitimately share a detector signature.
+    Declare ``context={"dem_assembly": "concatenated" | "monolithic"}`` to select the
+    message matching what is known about the DEM's origin.
+
+    When entries represent the same fault path, their probabilities should be
+    XOR-folded rather than treated as independent entries; the XOR-fold is
+    also the correct decoder-facing quantity for a shared signature.
 
 
     Note on fused probabilities: the XOR-fold of probabilities that are all
@@ -756,25 +775,93 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         for p in probs:
             all_dup_mechs.append(f"error({p}){tgt_str}")
     total_duplicate_signatures = len(duplicates) * reduction.multiplicity
-    return PropertyResult(
+    result = PropertyResult(
         name="duplicates",
         passed=False,
         severity="warning",
         message=(
             f"Found {total_duplicate_signatures} duplicate mechanism signature(s) "
-            f"across {len(duplicates)} distinct location(s). "
-            f"The same fault path appears more than once in the DEM, which "
-            f"typically happens when sub-circuit DEMs are concatenated without "
-            f"merging coincident mechanisms. Duplicate probabilities should be "
-            f"XOR-folded as p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), "
-            f"not left as separate entries."
+            f"across {len(duplicates)} distinct location(s). Distinct fault "
+            f"paths can legitimately share a (detector, observable) signature "
+            f"on multi-round circuit-level DEMs (signature collision); if this "
+            f"DEM was assembled by concatenating sub-circuit DEMs, the same "
+            f"fault path may instead be double-counted. The decoder-facing "
+            f"probability for a shared signature is the XOR-folded value "
+            f"p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), shown per "
+            f"group in the counter-example."
         ),
         counter_example=counter,
         counter_example_data={
             "mechanisms": all_dup_mechs,
             "signature_count": total_duplicate_signatures,
+            "location_count": len(duplicates),
         },
+        hint=(
+            "Hypothesis: mechanisms sharing a full signature in the same "
+            "spatial boundary region suggest sub-circuit DEMs concatenated "
+            "without XOR-merging; the correct probability is the XOR-fused "
+            "value shown in the counter-example. On decompose_errors=True "
+            "output, an undecomposed and a ^-decomposed instruction can also "
+            "legitimately share a merged signature."
+        ),
     )
+    return result
+
+
+_DUPLICATES_CLAIMS: dict[str | None, str] = {
+    "monolithic": (
+        "Signature collision on a monolithic DEM: expected on multi-round "
+        "circuit-level DEMs and usually benign."
+    ),
+    "concatenated": (
+        "The same fault path appears more than once in the DEM, which "
+        "typically happens when sub-circuit DEMs are concatenated without "
+        "merging coincident mechanisms."
+    ),
+}
+
+
+def apply_duplicates_dem_assembly(
+    result: PropertyResult, dem_assembly: bool | str | None
+) -> None:
+    """Rewrite a failed `duplicates` verdict per the dem_assembly context gate.
+
+    For ``concatenated`` the message selects the double-counting claim and the
+    XOR-fold instruction; the hint from ``check_duplicates`` (concatenation
+    hypothesis) already matches and is left unchanged. For ``monolithic`` the
+    message states the benign signature-collision claim *without* the XOR-fold
+    imperative, and the hint is rewritten to a consistent monolithic
+    hypothesis — the default hint would otherwise still assert concatenation
+    next to a "usually benign" message.
+
+    No-op for passing results, non-verdicts, or undeclared/unknown values.
+    """
+    if dem_assembly not in _DUPLICATES_CLAIMS or result.passed:
+        return
+    if result.name != "duplicates" or result.status != "verdict":
+        return
+    data = result.counter_example_data or {}
+    total = data.get("signature_count")
+    locations = data.get("location_count")
+    if total is None or locations is None:
+        return
+    result.message = (
+        f"Found {total} duplicate mechanism signature(s) across "
+        f"{locations} distinct location(s). {_DUPLICATES_CLAIMS[dem_assembly]} "
+    )
+    if dem_assembly == "monolithic":
+        result.hint = (
+            "Hypothesis: distinct fault paths legitimately share this "
+            "signature on a declared monolithic DEM; confirm no assembly "
+            "step duplicated a mechanism, then treat this finding as "
+            "informational."
+        )
+    else:
+        result.message += (
+            f"Duplicate probabilities should be XOR-folded as "
+            f"p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), not left as "
+            f"separate entries."
+        )
 
 
 def check_correctability(
@@ -876,6 +963,13 @@ def check_correctability(
                 "total_conflicts": total_conflicts,
                 "witnesses_truncated": len(conflicts) > max_shown,
             },
+            hint=(
+                "Hypothesis: spatially distant conflicting mechanisms suggest "
+                "genuine code-distance collapse; co-located ones suggest a "
+                "degenerate code family or a decompose_errors=True artefact. "
+                "Compare the conflicting witnesses' detector coordinates (from "
+                "counter_example_data) before treating this as a code bug."
+            ),
         )
 
     return PropertyResult(

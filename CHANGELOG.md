@@ -3,6 +3,22 @@
 User-visible changes to emlint. 
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] — 2026-09-03
+
+Agent-facing output contract and validation-corpus expansion. No new production checks; no changes to the public check API, severities, or exit-code semantics.
+
+### Added
+
+- Stable machine-readable output contract: each production check documents the exact keys and value types of its `counter_example_data` dict (`docs/checks.md`, §"Machine-readable output contract (stable)").
+- `PropertyResult.hint: str | None` (additive, default `None`): optional remediation hint on failed checks, phrased as hypotheses. Rendered in text output (with an epistemic-boundary header and 88-column counter-example wrapping) and in SARIF `properties.hint`.
+- Exit code 3 (unlintable input) documented in the exit-code contract alongside 0/1/2 (README, copilot instructions, `docs/cli.md`).
+- Applicability status semantics: `emlint.check`/CLI now distinguish a *declared unsupported circuit role* (plain `skipped`, exit-neutral) from *missing required context* on deterministic checks (`inconclusive`, contributes to exit 2 — anti-masking preserved). Warning-severity checks keep the exit-neutral skip in both cases. An explicit `complete_syndrome=True` context claim re-enables `detectability`.
+- `duplicates` rescope: honest "signature collision" message with `location_count` in `counter_example_data`, a remediation hint (XOR-fused probability), and a `dem_assembly` context gate that selects the claim matching the declared DEM origin (monolithic vs concatenated).
+
+### Known false positives and status
+
+- `duplicates` (warning) reports graphlike-decomposition signature sharing on clean `decompose_errors=True` DEMs; the `dem_assembly` context gate and the `graphlike-decoder` profile context reframe the message. Unchanged verdict semantics.
+
 ## [0.2.1] — 2026-08-26
 
 Incremental feature and hardening release: CLI/output-format features, project-level configuration, applicability profiles, and validation hardening. No new production checks; no changes to the public check API, severities, or exit-code semantics.
@@ -102,6 +118,7 @@ Initial release with six production checks:
 The CLI supports text/JSON output, check selection, severity filtering, and
 exit codes `0` (pass), `1` (error), and `2` (warnings only).
 
+[0.2.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.2
 [0.2.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.0
 [0.1.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.1.2

@@ -65,16 +65,34 @@ print(emlint.format_text(report))
 | Guide | Use it for |
 |---|---|
 | [CLI reference](docs/cli.md) | Commands, options, output, and exit codes |
-| [Check catalog](docs/checks.md) | What the six checks detect and how to interpret findings |
+| [Agent integration guide](docs/agent-integration.md) | Running emlint in a coding-agent fix-loop: exit-code handling, JSON contract, context declaration |
+| [Check catalog](docs/checks.md) | What the six checks detect and how to interpret findings, plus the machine-readable output contract |
+| [Debugging guide](docs/debugging.md) | Check-specific causes and investigation steps |
+| [Formal grounding](docs/formal-grounding.md) | DEM vocabulary and formal properties |
+| [v0.2 limitations](docs/limitations.md) | Scope, warnings, repeat blocks, and provisional behavior |
 
 > **Note:** on DEMs produced with `decompose_errors=True`, the `duplicates`
 > check (warning) may report mechanisms that share a detector signature after
 > graphlike decomposition as "duplicates". This is expected decomposition
 > output, not a concatenation bug. Use the `graphlike-decoder` profile context
 > when a graphlike matcher is the intended decoder.
-| [Debugging guide](docs/debugging.md) | Check-specific causes and investigation steps |
-| [Formal grounding](docs/formal-grounding.md) | DEM vocabulary and formal properties |
-| [v0.2 limitations](docs/limitations.md) | Scope, warnings, repeat blocks, and provisional behavior |
+
+## Exit codes
+
+| Code | Meaning |
+|---:|---|
+| `0` | All checks passed |
+| `1` | At least one error-severity finding |
+| `2` | Warnings only |
+| `3` | Unlintable input (unreadable or unparseable) |
+
+Treat exit code `3` as an input failure, not as findings: an agent loop that
+parses the report on exit `3` would reason about a DEM that emlint never saw.
+
+> **Epistemic boundary:** emlint analyzes DEMs only. Its findings establish
+> structural properties of the DEM itself; they do not establish that the
+> underlying circuit is semantically correct, nor that a decoder succeeds.
+> Circuit-level verification (e.g. with `stim`) remains necessary.
 
 ## CI
 

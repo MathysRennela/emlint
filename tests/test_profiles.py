@@ -11,6 +11,7 @@ import pytest
 import emlint
 from emlint.profiles import (
     PROFILES,
+    applicability_skip,
     applicability_skip_reason,
     validate_severity_override,
 )
@@ -67,16 +68,18 @@ def test_unknown_profile_raises_value_error():
 def test_post_selected_state_preparation_skips_detectability():
     """The QECirc-470 case: post-selected role without complete_syndrome must
     produce an explicit non-verdict result, never a pass or misleading
-    failure. detectability is error-severity, so the status is inconclusive
-    (exit 2), not a plain skip."""
+    failure. A declared unsupported role is an affirmative user declaration,
+    so the status is a plain exit-neutral skip."""
     report = emlint.check(
         "error(0.1) L0",
         context={"circuit_role": "post_selected_verification"},
     )
     detectability = next(r for r in report.results if r.name == "detectability")
-    assert detectability.status == "inconclusive"
+    assert detectability.status == "skipped"
     assert not detectability.passed
     assert "applicability" in detectability.message
+    assert not report.has_errors()
+    assert not report.has_warnings()
 
 
 def test_missing_required_context_yields_inconclusive_for_error_check():
@@ -109,28 +112,38 @@ def test_state_preparation_with_explicit_syndrome_claim_gets_verdict():
 
 
 def test_skipped_results_do_not_trigger_exit_code_2():
-    """Skipped/inconclusive statuses are visible but exit-code neutral."""
-    from emlint.report import Report
+    """Plain skips of heuristic checks are exit-code neutral: visible on the
+    report, but no error/warning contribution. (Inconclusive deterministic
+    checks DO drive exit 2 — see test_profile_restricts_battery... above.)
+    Exercises the real dispatcher path via emlint.check()."""
+    from emlint.checks import ALL_CHECKS
 
-    from emlint.report import PropertyResult
-
-    report = Report(
-        results=[
-            PropertyResult(
-                name="detectability",
-                passed=True,
-                severity="error",
-                message="skipped: missing required context: complete_syndrome",
-                status="skipped",
-            )
-        ],
-        num_detectors=0,
-        num_observables=0,
-        num_error_mechanisms=0,
+    report = emlint.check(
+        "error(0.1) D0 L0\ndetector D0",
+        checks={
+            "duplicates": ALL_CHECKS["duplicates"],
+            "sensitivity": ALL_CHECKS["sensitivity"],
+        },
+        profile="graphlike-decoder",
     )
+    # graphlike-decoder demands decoder context for every check; both selected
+    # checks are heuristic, so both surface as plain skips.
+    assert {r.name for r in report.results} == {"duplicates", "sensitivity"}
+    assert all(r.status == "skipped" for r in report.results)
     assert not report.has_errors()
     assert not report.has_warnings()
     assert report.all_passed()
+
+
+def test_inconclusive_deterministic_check_triggers_exit_2():
+    """An error-severity check without its required context is inconclusive
+    and must surface as exit 2 (has_warnings), never a silent exit 0."""
+    report = emlint.check("error(0.1) D0 L0\ndetector D0", profile="strict-dem")
+    detectability = next(r for r in report.results if r.name == "detectability")
+    assert detectability.status == "inconclusive"
+    assert detectability.severity == "error"
+    assert not report.has_errors()
+    assert report.has_warnings()
 
 
 def test_heuristic_check_cannot_be_upgraded_to_error():
@@ -153,6 +166,31 @@ def test_applicability_skip_reason_direct():
     )
     assert reason is not None and "complete_syndrome" in reason
     assert applicability_skip_reason("sensitivity", {}, None) is None
+
+
+def test_applicability_skip_status_splits_the_two_skip_sources():
+    role_skip = applicability_skip(
+        "detectability", {"circuit_role": "state_preparation"}, None
+    )
+    assert role_skip is not None
+    reason, status = role_skip
+    assert status == "skipped"
+    assert "applicability domain" in reason
+    missing_skip = applicability_skip(
+        "detectability", {"circuit_role": "encoding"}, None
+    )
+    assert missing_skip is not None
+    reason, status = missing_skip
+    assert status == "inconclusive"
+    assert "complete_syndrome" in reason
+    assert (
+        applicability_skip(
+            "detectability",
+            {"circuit_role": "memory", "complete_syndrome": True},
+            None,
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +224,8 @@ def test_detectability_verdict_or_skip_never_silent_pass(role, complete):
     detectability = next(r for r in report.results if r.name == "detectability")
     unsupported = {"state_preparation", "post_selected_verification"}
     if role in unsupported and complete is not True:
-        assert detectability.status == "inconclusive"
+        # Declared unsupported role → plain exit-neutral skip.
+        assert detectability.status == "skipped"
     elif complete is None:
         # circuit_role declared but complete_syndrome missing → inconclusive
         # (error-severity check without its required context).

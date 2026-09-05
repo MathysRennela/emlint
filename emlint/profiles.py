@@ -8,6 +8,7 @@ passes. Profiles never alter the 0/1/2 exit-code contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 # Checks whose invariant is deterministic; these alone may be upgraded to
 # "error" by a severity override (heuristic checks cannot). These are also the
@@ -161,6 +162,36 @@ def parse_context_value(raw: str) -> bool | str:
     return raw
 
 
+def _skip_reason(
+    check_name: str,
+    context: dict[str, bool | str],
+    profile: Profile | None,
+) -> tuple[str, bool] | None:
+    """Return (reason, declared_unsupported_role) or None if the check may run."""
+    if not context and profile is None:
+        return None
+    role = context.get("circuit_role")
+    blocked = _UNSUPPORTED_ROLES.get(check_name, frozenset())
+    if isinstance(role, str) and role in blocked:
+        # An explicit complete_syndrome=True claim re-enables the check: the
+        # user asserts the syndrome is complete despite the unusual role.
+        if check_name == "detectability" and context.get("complete_syndrome") is True:
+            return None
+        return (
+            f"circuit_role={role!r} is outside the check's applicability domain",
+            True,
+        )
+    required = list(_CHECK_REQUIRED_CONTEXT.get(check_name, ()))
+    if profile is not None:
+        required = list(
+            dict.fromkeys(required + list(profile.required_context_for(check_name)))
+        )
+    missing = [field for field in required if field not in context]
+    if missing:
+        return ("missing required context: " + ", ".join(missing), False)
+    return None
+
+
 def applicability_skip_reason(
     check_name: str,
     context: dict[str, bool | str],
@@ -177,22 +208,36 @@ def applicability_skip_reason(
     user starts declaring it keeps existing behavior byte-identical while
     making partial declarations explicit.
     """
-    if not context and profile is None:
+    skip = applicability_skip(check_name, context, profile)
+    return skip[0] if skip is not None else None
+
+
+def applicability_skip(
+    check_name: str,
+    context: dict[str, bool | str],
+    profile: Profile | None,
+) -> tuple[str, Literal["skipped", "inconclusive"]] | None:
+    """Return (reason, status) why *check_name* must not emit a verdict, or None.
+
+    The status distinguishes the two skip sources per the applicability
+    contract:
+
+    - A *declared unsupported circuit role* is an affirmative user declaration
+      that the DEM sits outside the check's applicability domain. The check
+      reports a plain ``skipped`` result (exit-neutral): ``detectability`` on
+      a state-preparation DEM with ``circuit_role=state_preparation`` is the
+      canonical case. An explicit ``complete_syndrome=True`` claim re-enables
+      the check instead.
+    - *Missing required context* means the caller did not supply demanded
+      metadata, so the check could not evaluate. Deterministic checks surface
+      as ``inconclusive`` (contributes to exit 2) — a run that silently lacks
+      its context must never let an error-severity bug hide behind exit 0.
+      Warning-severity checks keep the exit-neutral ``skipped``.
+    """
+    skip = _skip_reason(check_name, context, profile)
+    if skip is None:
         return None
-    role = context.get("circuit_role")
-    blocked = _UNSUPPORTED_ROLES.get(check_name, frozenset())
-    if isinstance(role, str) and role in blocked:
-        # An explicit complete_syndrome=True claim re-enables the check: the
-        # user asserts the syndrome is complete despite the unusual role.
-        if check_name == "detectability" and context.get("complete_syndrome") is True:
-            return None
-        return f"circuit_role={role!r} is outside the check's applicability domain"
-    required = list(_CHECK_REQUIRED_CONTEXT.get(check_name, ()))
-    if profile is not None:
-        required = list(
-            dict.fromkeys(required + list(profile.required_context_for(check_name)))
-        )
-    missing = [field for field in required if field not in context]
-    if missing:
-        return "missing required context: " + ", ".join(missing)
-    return None
+    reason, declared_unsupported = skip
+    if declared_unsupported or check_name not in _DETERMINISTIC_CHECKS:
+        return reason, "skipped"
+    return reason, "inconclusive"

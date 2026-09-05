@@ -34,9 +34,15 @@ def _failed(
     name: str = "completeness",
     severity: Literal["error", "warning"] = "error",
     ce: str = "ce",
+    hint: str | None = None,
 ) -> PropertyResult:
     return PropertyResult(
-        name=name, passed=False, severity=severity, message="fail", counter_example=ce
+        name=name,
+        passed=False,
+        severity=severity,
+        message="fail",
+        counter_example=ce,
+        hint=hint,
     )
 
 
@@ -150,6 +156,29 @@ def test_format_text_passed_has_no_severity_tag():
     text = format_text(_report(_passed("completeness", severity="error")))
     assert "[error]" not in text
     assert "[warning]" not in text
+
+
+def test_format_text_states_epistemic_boundary():
+    text = format_text(_report(_passed()))
+    assert "circuit semantic correctness" in text
+
+
+def test_format_text_renders_hint_when_present():
+    text = format_text(_report(_failed("sensitivity", hint="Hypothesis: try X")))
+    assert "Hint: Hypothesis: try X" in text
+
+
+def test_format_text_no_hint_line_when_absent():
+    text = format_text(_report(_failed("sensitivity")))
+    assert "Hint:" not in text
+
+
+def test_format_text_wraps_long_counter_example_with_hanging_indent():
+    long_ce = "word " * 40
+    text = format_text(_report(_failed(ce=long_ce)))
+    body_lines = [line for line in text.splitlines() if "word" in line]
+    assert len(body_lines) >= 2
+    assert all(line.startswith("        ") for line in body_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +322,11 @@ def test_has_warnings_false_when_only_error_fails():
 
 
 def _skipped(name: str = "detectability") -> PropertyResult:
+    # Matches the dispatcher construction (emlint/__init__.py): non-verdict
+    # results carry passed=False; only status distinguishes them from verdicts.
     return PropertyResult(
         name=name,
-        passed=True,
+        passed=False,
         severity="error",
         message="skipped: missing required context: complete_syndrome",
         status="skipped",
@@ -305,9 +336,9 @@ def _skipped(name: str = "detectability") -> PropertyResult:
 def _inconclusive(name: str = "distance") -> PropertyResult:
     return PropertyResult(
         name=name,
-        passed=True,
-        severity="warning",
-        message="inconclusive: lower bound below target without witness",
+        passed=False,
+        severity="error",
+        message="inconclusive: missing required context: complete_syndrome",
         status="inconclusive",
     )
 
@@ -334,21 +365,44 @@ def test_format_json_includes_status_field():
 
 
 def test_skipped_does_not_affect_exit_code_semantics():
-    report = _report(_skipped())
+    """A plain skip (heuristic check) is exit-neutral, matching the dispatcher
+    construction: passed=False, severity=warning, status=skipped."""
+    skipped = PropertyResult(
+        name="detectability",
+        passed=False,
+        severity="warning",
+        message="skipped: missing required context: decoder",
+        status="skipped",
+    )
+    report = _report(skipped)
     assert report.all_passed()
     assert not report.has_errors()
     assert not report.has_warnings()
 
 
-def test_inconclusive_does_not_affect_exit_code_semantics():
-    report = _report(_inconclusive())
+def test_inconclusive_surfaces_as_exit_2_not_exit_1():
+    """An inconclusive deterministic check drives exit 2 (has_warnings), never
+    exit 1 (has_errors) and never a silent exit 0. This is the documented
+    applicability contract; see emlint.profiles and tests/test_profiles.py."""
+    inconclusive = PropertyResult(
+        name="detectability",
+        passed=False,
+        severity="error",
+        message="inconclusive: missing required context: complete_syndrome",
+        status="inconclusive",
+    )
+    report = _report(inconclusive)
     assert report.all_passed()
     assert not report.has_errors()
-    assert not report.has_warnings()
+    assert report.has_warnings()
 
 
 def test_sarif_excludes_non_verdict_results():
-    """SARIF results carry findings; skipped/inconclusive are not findings."""
+    """SARIF results carry findings; skipped/inconclusive are not findings.
+
+    The _skipped/_inconclusive fixtures use the dispatcher construction
+    (passed=False), so this pins the exclusion against real dispatcher
+    output, not just fixture-shaped results."""
     data = json.loads(
         format_sarif(_report(_failed("duplicates"), _skipped(), _inconclusive()))
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import textwrap
 from dataclasses import dataclass
 from typing import Callable, Literal
 
@@ -15,6 +16,8 @@ class PropertyResult:
     counter_example: str | None = None
     counter_example_data: dict | None = None
     status: Literal["verdict", "skipped", "inconclusive"] = "verdict"
+    # Remediation hypothesis
+    hint: str | None = None
 
 
 @dataclass
@@ -32,7 +35,9 @@ class Report:
     unknown_instructions: list[str] = dataclasses.field(default_factory=list)
 
     def all_passed(self) -> bool:
-        return all(r.passed or r.status == "skipped" for r in self.results)
+        # Non-verdict results (skipped/inconclusive) are exit-code neutral:
+        # they are surfaced on the report but are not pass/fail verdicts.
+        return all(r.passed or r.status != "verdict" for r in self.results)
 
     @property
     def any_skipped(self) -> bool:
@@ -40,10 +45,23 @@ class Report:
         return any(r.status != "verdict" for r in self.results)
 
     def has_errors(self) -> bool:
-        return any(not r.passed and r.severity == "error" for r in self.results)
+        # Only verdicts count: an inconclusive error-severity check detected
+        # no bug, it just could not run (it contributes to exit 2 instead).
+        return any(
+            r.status == "verdict" and not r.passed and r.severity == "error"
+            for r in self.results
+        )
 
     def has_warnings(self) -> bool:
-        return any(not r.passed and r.severity == "warning" for r in self.results)
+        # Warning-severity verdict failures, plus any inconclusive result:
+        # a deterministic check that could not emit a verdict must surface
+        # as exit 2, never a silent skip behind exit 0. A plain skip of a
+        # heuristic check is exit-neutral.
+        return any(
+            (r.status == "verdict" and not r.passed and r.severity == "warning")
+            or r.status == "inconclusive"
+            for r in self.results
+        )
 
 
 # The canonical type for all check functions.
@@ -53,11 +71,26 @@ class Report:
 CheckFn = Callable[..., PropertyResult]
 
 
+def _wrap(text: str, width: int = 88, indent: str = "        ") -> str:
+    """Wrap a long line with a hanging indent so counter-examples stay readable."""
+    return "\n".join(
+        textwrap.wrap(
+            text,
+            width=width,
+            initial_indent=indent,
+            subsequent_indent=indent,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+    )
+
+
 def format_text(report: Report) -> str:
     lines: list[str] = [
         f"Detectors: {report.num_detectors}  "
         f"Observables: {report.num_observables}  "
         f"Error mechanisms: {report.num_error_mechanisms}",
+        "DEM-only analysis: findings do not establish circuit semantic " "correctness.",
         "",
     ]
     if report.disabled_checks:
@@ -97,7 +130,9 @@ def format_text(report: Report) -> str:
         severity_tag = f" [{r.severity}]" if not r.passed else ""
         lines.append(f"  {icon}{severity_tag} {r.name}: {r.message}")
         if r.counter_example:
-            lines.append(f"      Counter-example: {r.counter_example}")
+            lines.append(_wrap(f"Counter-example: {r.counter_example}"))
+        if r.hint:
+            lines.append(_wrap(f"Hint: {r.hint}"))
     return "\n".join(lines)
 
 
@@ -143,10 +178,14 @@ def format_sarif(report: Report) -> str:
                 "status": result.status,
                 "counter_example": result.counter_example,
                 "counter_example_data": result.counter_example_data,
+                "hint": result.hint,
             },
         }
         for result in report.results
-        if not result.passed
+        # Failed verdicts only: skipped/inconclusive results are not findings
+        # and are excluded from SARIF per the output contract (they carry
+        # passed=False from the dispatcher, so status must be checked too).
+        if not result.passed and result.status == "verdict"
     ]
     data = {
         "$schema": ("https://json.schemastore.org/sarif-2.1.0.json"),
