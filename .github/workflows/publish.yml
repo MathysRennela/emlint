@@ -78,3 +78,19 @@ jobs:
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  notify-bench:
+    needs: [publish]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger emlint-bench release smoke
+        env:
+          BENCH_DISPATCH_TOKEN: ${{ secrets.BENCH_DISPATCH_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          curl -sf -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $BENCH_DISPATCH_TOKEN" \
+            https://api.github.com/repos/MathysRennela/emlint-bench/dispatches \
+            -d "{\"event_type\":\"emlint-release\",\"client_payload\":{\"version\":\"$VERSION\"}}"
