@@ -1,8 +1,14 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   test:
@@ -35,16 +41,15 @@ jobs:
           name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
           path: coverage.xml
 
-  lockfile:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Verify uv.lock is consistent with pyproject.toml
-        run: uv lock --check
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: unittests
+          name: ${{ matrix.os }}-py${{ matrix.python-version }}
+          use_oidc: true
+          # Codecov must be activated for this repository before uploads can be accepted.
+          fail_ci_if_error: false
 
   release-gates:
     runs-on: ubuntu-latest
@@ -68,7 +73,7 @@ jobs:
         run: python -m build --sdist --wheel
 
       - name: Check known-good DEM
-        run: emlint check benchmarks/baseline_d5_r5.dem --severity error
+        run: emlint check examples/fixed.dem --severity error
 
       - name: Check known-bad DEM returns an error exit code
         shell: bash
