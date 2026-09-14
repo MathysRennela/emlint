@@ -1,8 +1,14 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   test:
@@ -34,6 +40,15 @@ jobs:
         with:
           name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
           path: coverage.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: unittests
+          name: ${{ matrix.os }}-py${{ matrix.python-version }}
+          use_oidc: true
+          fail_ci_if_error: true
 
   lockfile:
     runs-on: ubuntu-latest

@@ -5,6 +5,8 @@
 </div>
 
 [![PyPI](https://img.shields.io/pypi/v/emlint)](https://pypi.org/project/emlint/)
+[![CI](https://github.com/MathysRennela/emlint/actions/workflows/emlint.yml/badge.svg)](https://github.com/MathysRennela/emlint/actions/workflows/emlint.yml)
+[![Codecov](https://codecov.io/gh/MathysRennela/emlint/graph/badge.svg?branch=main)](https://codecov.io/gh/MathysRennela/emlint)
 
 **stim simulates. sinter samples. emlint verifies.**
 
