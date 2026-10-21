@@ -387,3 +387,99 @@ def test_coord_dimensionality_mixed_is_accepted():
     )
     model._validate_tree()
     assert model.flattened() == []
+
+
+# ---------------------------------------------------------------------------
+# Validation error paths
+# ---------------------------------------------------------------------------
+
+
+def test_model_rejects_non_numeric_probability():
+    """ErrorMechanism.probability must be numeric; a string is rejected by
+    _validate_tree (catches the uncovered TypeError path)."""
+    mech = ErrorMechanism("0.1", frozenset({0}), frozenset())
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[mech])
+    with pytest.raises(TypeError, match="probability must be numeric"):
+        model._validate_tree()
+
+
+def test_model_rejects_non_tuple_decomposition_hints():
+    """decomposition_hints must be a tuple (catches the uncovered TypeError)."""
+    mech = ErrorMechanism(0.1, frozenset({0}), frozenset(), decomposition_hints="nope")
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[mech])
+    with pytest.raises(TypeError, match="decomposition_hints must be a tuple"):
+        model._validate_tree()
+
+
+def test_model_rejects_non_tuple_body():
+    """RepeatBlock.body must be a tuple (catches the uncovered TypeError)."""
+    block = RepeatBlock(
+        body=[ErrorMechanism(0.1, frozenset({0}), frozenset())], count=2
+    )
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[block])
+    with pytest.raises(TypeError, match="body must be a tuple"):
+        model._validate_tree()
+
+
+def test_model_rejects_non_list_error_mechanisms():
+    """error_mechanisms must be a list (catches the uncovered TypeError)."""
+    mech = ErrorMechanism(0.1, frozenset({0}), frozenset())
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=(mech,))
+    with pytest.raises(TypeError, match="error_mechanisms must be a list"):
+        model._validate_tree()
+
+
+def test_model_rejects_boolean_probability():
+    """bool is not a valid probability (must be rejected, not treated as 0/1)."""
+    mech = ErrorMechanism(True, frozenset({0}), frozenset())
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[mech])
+    with pytest.raises(TypeError, match="probability must be numeric"):
+        model._validate_tree()
+
+
+def test_model_rejects_boolean_detector_id():
+    """bool is not a valid detector ID (must be rejected, not treated as 0/1)."""
+    mech = ErrorMechanism(0.1, frozenset({True}), frozenset())
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[mech])
+    with pytest.raises(TypeError, match="detector ID must be an exact integer"):
+        model._validate_tree()
+
+
+def test_model_rejects_negative_detector_id():
+    """Negative detector IDs are rejected by validation."""
+    mech = ErrorMechanism(0.1, frozenset({-1}), frozenset())
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[mech])
+    with pytest.raises(ValueError, match="detector ID must be non-negative"):
+        model._validate_tree()
+
+
+def test_model_rejects_negative_repeat_count():
+    """A negative repeat count is rejected."""
+    block = RepeatBlock((ErrorMechanism(0.1, frozenset({0}), frozenset()),), count=-1)
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[block])
+    with pytest.raises(ValueError, match="count must be non-negative"):
+        model._validate_tree()
+
+
+def test_model_rejects_boolean_repeat_count():
+    """bool is not a valid repeat count."""
+    block = RepeatBlock((ErrorMechanism(0.1, frozenset({0}), frozenset()),), count=True)
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[block])
+    with pytest.raises(TypeError, match="count must be an exact integer"):
+        model._validate_tree()
+
+
+def test_model_rejects_non_mechanism_non_block_item():
+    """An item that is neither ErrorMechanism nor RepeatBlock is rejected."""
+    model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=["junk"])
+    with pytest.raises(TypeError, match="must be an ErrorMechanism or RepeatBlock"):
+        model._validate_tree()
+
+
+def test_progression_ids_count_zero_does_not_validate_endpoints():
+    """_validate_progression_ids with count==0 must not validate the end
+    endpoint (catches the uncovered early-return path)."""
+    from emlint.model import _validate_progression_ids
+
+    # start would make the end negative, but count==0 means no end exists.
+    _validate_progression_ids({0}, start=-5, stride=2, count=0, label="x")  # no raise

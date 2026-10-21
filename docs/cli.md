@@ -42,6 +42,20 @@ failure, not a lint finding.
   contains warnings but no errors, the CLI exits `0` because warnings were
   explicitly excluded from the requested severity.
 - `--severity warning` includes both warning and error findings.
+- `--profile NAME` selects a named profile from the registry
+  (`strict-dem`, `graphlike-decoder`, `surface-code-circuit`,
+  `subsystem-code`). A profile restricts the battery to its enabled checks and
+  demands context: checks whose required context is missing are reported as
+  explicit `[skipped]` results, never silently omitted. Profile selection never
+  alters the 0/1/2 exit-code contract.
+- `--context KEY=VALUE` supplies applicability metadata (repeatable), e.g.
+  `--context circuit_role=memory --context complete_syndrome=true`. Values
+  `true`/`false` are parsed as booleans; everything else stays a string.
+  Declaring any context opts the run into applicability enforcement: checks
+  whose required context is absent or whose declared circuit role is outside
+  their domain (e.g. `detectability` on a post-selected verification) produce
+  explicit skipped results instead of verdicts. Without declared context every
+  check runs as before.
 
 ### Project-level settings
 
@@ -54,11 +68,24 @@ only = ["detectability", "sensitivity"]
 ignore = ["duplicates"]
 format = "sarif"
 severity = "error"
+profile = "strict-dem"
+
+[tool.emlint.severity_overrides]
+# Downgrade a deterministic check (allowed direction); heuristic checks such
+# as `duplicates` cannot be upgraded to error.
+correctability = "warning"
+
+[tool.emlint.context]
+circuit_role = "memory"
+complete_syndrome = true
 ```
 
-The keys are `only`, `ignore`, `format`, and `severity`. Command-line options
-override the corresponding project setting. `--check` and `only` cannot be used
-together; use `--only` for new configurations.
+The keys are `only`, `ignore`, `format`, `severity`, `profile`,
+`severity_overrides`, and `context`. Command-line options override the
+corresponding project setting. Disabled checks and applied severity overrides
+are surfaced in every output format so omissions and weakenings are never
+silent. `--check` and `only` cannot be used together; use `--only` for new
+configurations.
 
 ## Exit codes
 

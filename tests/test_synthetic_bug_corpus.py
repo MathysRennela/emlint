@@ -41,6 +41,12 @@ _SYNTHETIC_BUGS = [
         "correctability",
         id="correctability",
     ),
+    pytest.param(
+        "null mechanism",
+        "error(0.1)",
+        "null_mechanism",
+        id="null_mechanism",
+    ),
 ]
 
 

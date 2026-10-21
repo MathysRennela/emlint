@@ -15,7 +15,7 @@ from hypothesis import given
 import hypothesis.strategies as st
 
 from emlint.checks import _MAX_SHOWN, check_sensitivity
-from emlint.model import ErrorModel
+from emlint.model import ErrorMechanism, ErrorModel, RepeatBlock
 from helpers import _mech, _model, assert_failed
 
 # ---------------------------------------------------------------------------
@@ -346,3 +346,46 @@ def test_all_detectors_covered_from_stim_dem_passes():
     dem = stim.DetectorErrorModel("error(0.1) D0 L0\ndetector D0")
     model = from_stim_dem(dem)
     assert check_sensitivity(model).passed
+
+
+# ---------------------------------------------------------------------------
+# Control-flow and truncation boundary mutants
+# ---------------------------------------------------------------------------
+
+
+def test_sensitivity_adds_every_detector_in_single_scope():
+    """A mechanism with multiple detectors in a single-iteration scope must
+    mark every detector participating. (Catches the `continue`→`break` mutant
+    that would only add the first detector.)"""
+    body = (ErrorMechanism(0.1, frozenset({0, 1}), frozenset()),)
+    block = RepeatBlock(
+        body, count=1, detector_offset_per_iteration=0, absolute_start_offset=0
+    )
+    model = ErrorModel(detectors={0, 1}, observables=set(), error_mechanisms=[block])
+    assert check_sensitivity(model).passed
+
+
+def test_sensitivity_adds_every_detector_in_nested_scope():
+    """Same invariant on the nested-repeats path (catches the second
+    `continue`→`break` mutant)."""
+    inner = RepeatBlock(
+        (ErrorMechanism(0.1, frozenset({0, 1}), frozenset()),),
+        count=1,
+        detector_offset_per_iteration=0,
+        absolute_start_offset=0,
+    )
+    outer = RepeatBlock(
+        (inner,), count=2, detector_offset_per_iteration=0, absolute_start_offset=0
+    )
+    model = ErrorModel(detectors={0, 1}, observables=set(), error_mechanisms=[outer])
+    assert check_sensitivity(model).passed
+
+
+def test_sensitivity_truncation_boundary_exactly_max_shown():
+    """Exactly _MAX_SHOWN dead detectors must render all of them with no
+    overflow note. (Catches the `> max_shown`→`>=` mutant.)"""
+    dead = list(range(_MAX_SHOWN))
+    model = ErrorModel(detectors=set(dead), observables=set(), error_mechanisms=[])
+    result = assert_failed(check_sensitivity(model))
+    assert "more" not in result.counter_example
+    assert f"D{_MAX_SHOWN - 1}" in result.counter_example

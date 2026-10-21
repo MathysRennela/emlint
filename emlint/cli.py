@@ -242,6 +242,7 @@ def main() -> None:
         )
     except (OSError, ValueError) as exc:
         print(f"emlint: unable to lint input: {exc}", file=sys.stderr)
+        print("No static checks were run.", file=sys.stderr)
         sys.exit(3)
 
     # Apply per-check severity overrides after the checks ran.
@@ -303,6 +304,7 @@ def main() -> None:
             disabled_checks=report.disabled_checks,
             applied_overrides=report.applied_overrides,
             unknown_instructions=report.unknown_instructions,
+            profile=report.profile,
         )
     else:
         display_report = report

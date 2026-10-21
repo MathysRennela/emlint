@@ -16,6 +16,7 @@ from emlint.checks import (
     check_correctability,
     check_detectability,
     check_duplicates,
+    check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
     check_sensitivity,
@@ -29,6 +30,7 @@ _CHECKS = (
     check_probability_bounds,
     check_duplicates,
     check_correctability,
+    check_null_mechanism,
 )
 
 
@@ -142,6 +144,10 @@ def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
                 len(observables) <= 1
                 for observables in syndrome_to_observables.values()
             ),
+            "warning",
+        ),
+        "null_mechanism": (
+            all(m.detectors or m.observables for m in mechanisms),
             "warning",
         ),
     }

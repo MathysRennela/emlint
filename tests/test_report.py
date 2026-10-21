@@ -181,6 +181,18 @@ def test_format_text_wraps_long_counter_example_with_hanging_indent():
     assert all(line.startswith("        ") for line in body_lines)
 
 
+def test_format_text_preserves_newlines_in_counter_example():
+    """One-line-per-group counter-examples keep their line breaks after wrapping."""
+    multi_line_ce = (
+        "signature D0: p = {0.1} -> p_eff = 0.1\n"
+        "signature D1: p = {0.2} -> p_eff = 0.2"
+    )
+    text = format_text(_report(_failed(ce=multi_line_ce)))
+    group_lines = [line for line in text.splitlines() if "p_eff" in line]
+    assert len(group_lines) == 2
+    assert group_lines[0] != group_lines[1]
+
+
 # ---------------------------------------------------------------------------
 # format_json
 # ---------------------------------------------------------------------------
@@ -408,3 +420,134 @@ def test_sarif_excludes_non_verdict_results():
     )
     rule_ids = [r["ruleId"] for r in data["runs"][0]["results"]]
     assert rule_ids == ["duplicates"]
+
+
+# ---------------------------------------------------------------------------
+# Profile stamping (certifier contract)
+# ---------------------------------------------------------------------------
+
+
+def _profiled_report(profile: str | None = "strict-dem") -> Report:
+    return Report(
+        results=[_passed()],
+        num_detectors=4,
+        num_observables=1,
+        num_error_mechanisms=10,
+        profile=profile,
+    )
+
+
+def test_report_default_profile_is_none():
+    assert _report(_passed()).profile is None
+
+
+def test_format_text_stamps_profile():
+    text = format_text(_profiled_report("graphlike-decoder"))
+    assert "[profile] graphlike-decoder" in text
+
+
+def test_format_text_omits_profile_when_none():
+    assert "[profile]" not in format_text(_report(_passed()))
+
+
+def test_format_json_stamps_profile():
+    data = json.loads(format_json(_profiled_report("strict-dem")))
+    assert data["profile"] == "strict-dem"
+
+
+def test_format_json_profile_null_when_none():
+    data = json.loads(format_json(_report(_passed())))
+    assert data["profile"] is None
+
+
+def test_format_sarif_stamps_profile():
+    data = json.loads(format_sarif(_profiled_report("strict-dem")))
+    assert data["runs"][0]["properties"]["profile"] == "strict-dem"
+
+
+# ---------------------------------------------------------------------------
+# applied_overrides rendering
+# ---------------------------------------------------------------------------
+
+
+def test_format_text_renders_applied_overrides():
+    """format_text must render the applied_overrides section (catches the
+    uncovered rendering path)."""
+    result = PropertyResult(
+        name="duplicates", passed=False, severity="warning", message="x"
+    )
+    report = Report(
+        results=[result],
+        num_detectors=1,
+        num_observables=1,
+        num_error_mechanisms=1,
+        applied_overrides={"duplicates": "error"},
+    )
+    text = format_text(report)
+    assert "[override] duplicates: severity error -> warning" in text
+
+
+def test_format_text_skips_override_without_matching_result():
+    """An override whose check has no result must not crash or render."""
+    report = Report(
+        results=[],
+        num_detectors=1,
+        num_observables=1,
+        num_error_mechanisms=1,
+        applied_overrides={"ghost": "error"},
+    )
+    text = format_text(report)
+    assert "[override] ghost" not in text
+
+
+# ---------------------------------------------------------------------------
+# Vacuity disclosure
+# ---------------------------------------------------------------------------
+
+
+def _vacuous_report(*results: PropertyResult) -> Report:
+    return Report(
+        results=list(results),
+        num_detectors=0,
+        num_observables=0,
+        num_error_mechanisms=0,
+    )
+
+
+def test_is_vacuous_true_when_no_error_mechanisms():
+    assert _vacuous_report(_passed()).is_vacuous
+
+
+def test_is_vacuous_false_when_mechanisms_present():
+    assert not _report(_passed()).is_vacuous
+
+
+def test_format_text_discloses_vacuous_dem():
+    """A mechanism-free DEM must be disclosed, not read as a clean audit."""
+    text = format_text(_vacuous_report(_passed()))
+    assert "[vacuous]" in text
+    assert "no error mechanisms" in text
+
+
+def test_format_text_omits_vacuity_when_mechanisms_present():
+    text = format_text(_report(_passed()))
+    assert "[vacuous]" not in text
+
+
+def test_format_json_reports_vacuity_flag():
+    data = json.loads(format_json(_vacuous_report(_passed())))
+    assert data["is_vacuous"] is True
+    assert json.loads(format_json(_report(_passed())))["is_vacuous"] is False
+
+
+def test_format_sarif_reports_vacuity_flag():
+    data = json.loads(format_sarif(_vacuous_report(_passed())))
+    assert data["runs"][0]["properties"]["is_vacuous"] is True
+
+
+def test_vacuity_disclosure_carries_no_severity_or_exit_code_change():
+    """The disclosure is report-layer only: a vacuous DEM still passes."""
+    report = _vacuous_report(_passed())
+    assert report.all_passed()
+    assert not report.has_errors()
+    assert not report.has_warnings()

@@ -3,6 +3,37 @@
 User-visible changes to emlint. 
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] — 2026-10-21
+
+Hardening release for existing checks and report/CLI behavior, plus the
+`null_mechanism` promotion. Public check signatures and the exit-code contract
+remain unchanged.
+
+### Added
+
+- Production check `null_mechanism` (warning): flags error mechanisms whose detector and observable support are both empty. Promoted from `experimental/` and enabled in the `strict-dem` profile.
+- Repeat-aware contract table for all production checks (`docs/checks.md`).
+- Vacuity disclosure in the report layer: a DEM with no error mechanisms now reports `[vacuous]` (and `is_vacuous` in the JSON and SARIF outputs) instead of reading as a clean audit. Report-layer only — no new check, no severity change, and no exit-code change.
+
+### Changed
+
+- `duplicates` now identifies groups whose merged signatures match while their
+  `^` decomposition structures differ, and includes per-group details in
+  `counter_example_data`.
+- Reports retain the selected profile in text, JSON, and SARIF output.
+- CLI input errors state that no static checks ran; string/path disambiguation
+  now handles filesystem errors from path probing.
+- Coordinate-coverage disclosure verified for experimental coordinate-consuming checks.
+- `null_mechanism` evaluates repeat templates rather than expanding the repeat body, and reports `instance_count` alongside `mechanisms` in `counter_example_data`.
+
+### Known limitations
+
+- `duplicates` remains a warning for matching merged signatures. Mixed
+  decomposition details clarify when those signatures may represent distinct
+  fault paths.
+- The matched shift-left simulation benchmark is deferred to v0.3 (technical
+  debt item 52); no full-corpus shift-left index is claimed.
+
 ## [0.2.2] — 2026-09-03
 
 Agent-facing output contract and validation-corpus expansion. No new production checks; no changes to the public check API, severities, or exit-code semantics.
@@ -118,6 +149,7 @@ Initial release with six production checks:
 The CLI supports text/JSON output, check selection, severity filtering, and
 exit codes `0` (pass), `1` (error), and `2` (warnings only).
 
+[0.2.3]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.3
 [0.2.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.2
 [0.2.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.0

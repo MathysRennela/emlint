@@ -1,0 +1,20 @@
+# Codecov configuration for emlint.
+# Coverage is reported from the CI test job (see .github/workflows/ci.yml).
+
+coverage:
+  status:
+    project:
+      default:
+        # A drop of more than 1% fails the status check; otherwise informational.
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+
+# Ignore dev-only and generated paths that are not part of the shipped package.
+ignore:
+  - "experimental/**"
+  - "tests/**"
+  - "tools/**"

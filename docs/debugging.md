@@ -117,6 +117,31 @@ expected property of the code family.
 **Scope:** the check examines mechanisms individually. It does not analyze
 combinations of co-occurring faults or prove the general code distance.
 
+## `null_mechanism` fails
+
+> `Found 1 null error mechanism instance(s) across 1 distinct location(s) that
+> trigger no detector and flip no observable`
+
+An error mechanism with no detector targets and no observable targets. It
+contributes nothing to the syndrome and nothing to the logical flip, so no
+decoder can observe it and no correction can depend on it. It is a provable
+no-op.
+
+**Possible causes:**
+
+- A hand-written or third-party DEM carries an intentional no-op line. This is
+  the expected case, and it is why the check is warning-level.
+- A mechanism was emitted with its targets lost — for example a `^`-separated
+  decomposition component whose targets were dropped upstream. Decomposition
+  provenance is not preserved in v0.2 (see `limitations.md`).
+- A fault site was declared in a circuit but produced an error instruction with
+  no observable effect, so the DEM no longer represents the fault it came from.
+
+**Scope:** the predicate is *empty support on both sides*, never even detector
+weight. A mechanism flipping several detectors is not flagged. The check does
+not assert that a DEM is a faithful model of a circuit, and it does not detect
+merely low-weight mechanisms.
+
 ## General workflow
 
 1. Re-run with the default text output and read the counter-example.

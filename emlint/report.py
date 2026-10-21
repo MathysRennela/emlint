@@ -33,11 +33,31 @@ class Report:
     # {check_name: original_severity}. Surfaced so weakenings are visible.
     applied_overrides: dict[str, str] = dataclasses.field(default_factory=dict)
     unknown_instructions: list[str] = dataclasses.field(default_factory=list)
+    profile: str | None = None
 
     def all_passed(self) -> bool:
         # Non-verdict results (skipped/inconclusive) are exit-code neutral:
         # they are surfaced on the report but are not pass/fail verdicts.
         return all(r.passed or r.status != "verdict" for r in self.results)
+
+    @property
+    def is_vacuous(self) -> bool:
+        """True when the DEM carries no error mechanisms.
+
+        Every mechanism-level check then had nothing to examine, so an
+        all-green report describes an *empty audit* rather than a clean DEM.
+        The report layer discloses this instead of letting the counts speak
+        for themselves: a user reading "Error mechanisms: 0" next to a column
+        of green checks would otherwise read it as certification.
+
+        This is a report-layer disclosure only: it carries no severity, adds no
+        check, and changes no exit code. The full form — comparing the counts
+        against *expected* detector/observable counts — is deferred until
+        corpus metadata supplies the expectation
+        (`notes/design/CHECK_PRIORITY_RECOMMENDATION.md`, "Vacuity /
+        degenerate-DEM guard").
+        """
+        return self.num_error_mechanisms == 0
 
     @property
     def any_skipped(self) -> bool:
@@ -72,16 +92,23 @@ CheckFn = Callable[..., PropertyResult]
 
 
 def _wrap(text: str, width: int = 88, indent: str = "        ") -> str:
-    """Wrap a long line with a hanging indent so counter-examples stay readable."""
+    """Wrap a long line with a hanging indent so counter-examples stay readable.
+
+    Newlines in the text are preserved: each segment is wrapped independently,
+    so counter-examples formatted as one line per group keep their line breaks.
+    """
     return "\n".join(
-        textwrap.wrap(
-            text,
-            width=width,
-            initial_indent=indent,
-            subsequent_indent=indent,
-            break_long_words=False,
-            break_on_hyphens=False,
+        "\n".join(
+            textwrap.wrap(
+                segment,
+                width=width,
+                initial_indent=indent,
+                subsequent_indent=indent,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
         )
+        for segment in text.split("\n")
     )
 
 
@@ -93,6 +120,9 @@ def format_text(report: Report) -> str:
         "DEM-only analysis: findings do not establish circuit semantic " "correctness.",
         "",
     ]
+    if report.profile:
+        lines.append(f"  [profile] {report.profile}")
+        lines.append("")
     if report.disabled_checks:
         lines.append(
             "  [disabled] checks not run by configuration: "
@@ -110,6 +140,12 @@ def format_text(report: Report) -> str:
         lines.append(
             "  [partial-parse] DEM instructions not representable by emlint "
             "(checks ran on a partial view): " + ", ".join(report.unknown_instructions)
+        )
+        lines.append("")
+    if report.is_vacuous:
+        lines.append(
+            "  [vacuous] DEM has no error mechanisms: the mechanism-level checks "
+            "audited nothing, so a passing report certifies no noise model."
         )
         lines.append("")
     if report.any_skipped:
@@ -141,11 +177,13 @@ def format_json(report: Report) -> str:
         "num_detectors": report.num_detectors,
         "num_observables": report.num_observables,
         "num_error_mechanisms": report.num_error_mechanisms,
+        "profile": report.profile,
         "disabled_checks": report.disabled_checks,
         "applied_overrides": report.applied_overrides,
         "unknown_instructions": report.unknown_instructions,
         "all_passed": report.all_passed(),
         "any_skipped": report.any_skipped,
+        "is_vacuous": report.is_vacuous,
         "has_errors": report.has_errors(),
         "has_warnings": report.has_warnings(),
         "results": [dataclasses.asdict(r) for r in report.results],
@@ -198,10 +236,12 @@ def format_sarif(report: Report) -> str:
                     "num_detectors": report.num_detectors,
                     "num_observables": report.num_observables,
                     "num_error_mechanisms": report.num_error_mechanisms,
+                    "profile": report.profile,
                     "disabled_checks": report.disabled_checks,
                     "applied_overrides": report.applied_overrides,
                     "unknown_instructions": report.unknown_instructions,
                     "any_skipped": report.any_skipped,
+                    "is_vacuous": report.is_vacuous,
                 },
             }
         ],

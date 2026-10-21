@@ -14,6 +14,7 @@ from emlint.checks import (
     check_correctability,
     check_detectability,
     check_duplicates,
+    check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
     check_sensitivity,
@@ -26,6 +27,7 @@ _SCOPE_LOCAL_CHECKS = {
     check_probability_bounds,
     check_observable_coverage,
     check_sensitivity,
+    check_null_mechanism,
 }
 
 _CROSS_SCOPE_CHECKS = {
@@ -257,7 +259,11 @@ def check(
         # Explicit Path objects remain preferable when a string could be either
         # a valid DEM or an existing filename.
         path = Path(source)
-        if path.exists():
+        try:
+            is_path = path.exists()
+        except OSError:
+            is_path = False
+        if is_path:
             text = path.read_text()  # OSError propagates to the caller
         else:
             text = source
@@ -392,4 +398,5 @@ def check(
         disabled_checks=list(disabled_checks or []),
         applied_overrides=applied_overrides,
         unknown_instructions=list(model.unknown_instructions),
+        profile=profile,
     )

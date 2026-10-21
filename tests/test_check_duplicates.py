@@ -19,8 +19,14 @@ import pytest
 from hypothesis import given
 import hypothesis.strategies as st
 
-from emlint.checks import _MAX_SHOWN, ALL_CHECKS, check_duplicates
-from emlint.model import ErrorMechanism, ErrorModel
+from emlint.checks import (
+    _MAX_SHOWN,
+    ALL_CHECKS,
+    apply_duplicates_dem_assembly,
+    check_duplicates,
+)
+from emlint.model import ErrorMechanism, ErrorModel, RepeatBlock
+from emlint.report import PropertyResult
 from helpers import _mech, _model, assert_failed
 
 # ---------------------------------------------------------------------------
@@ -200,6 +206,52 @@ def test_decomposed_mechanisms_duplicate_at_merged_granularity():
     assert len(result.counter_example_data["mechanisms"]) == 2
 
 
+def test_mixed_decomposition_group_is_flagged():
+    """A merged signature shared by an undecomposed and a ^-decomposed
+    mechanism is a *mixed* group: distinct fault paths that collide only at
+    the decoder-facing granularity, not true duplicates of one path."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.001) D0 D2\nerror(0.001) D2 ^ D0\ndetector D0\ndetector D2"
+    )
+    model = from_stim_dem(dem)
+    result = assert_failed(check_duplicates(model))
+    group = result.counter_example_data["groups"][0]
+    assert len(group["decompositions"]) == 2
+    assert result.counter_example_data["mixed_group_count"] == 1
+    assert "[mixed decomposition]" in result.counter_example
+    assert "mixed" in result.message
+
+
+def test_homogeneous_decomposition_group_is_not_mixed():
+    """Two mechanisms with the same decomposition structure are a true
+    duplicate group, not a mixed collision."""
+    m0 = _mech(0.1, detectors=frozenset({0}), observables=frozenset())
+    m1 = _mech(0.2, detectors=frozenset({0}), observables=frozenset())
+    result = assert_failed(check_duplicates(_model(m0, m1)))
+    group = result.counter_example_data["groups"][0]
+    assert group["decompositions"] == [("plain",)]
+    assert result.counter_example_data["mixed_group_count"] == 0
+    assert "[mixed decomposition]" not in result.counter_example
+
+
+def test_same_decomposition_components_are_not_mixed():
+    """Two ^-decomposed mechanisms with identical component structure are a
+    true duplicate group (same fault path), not a mixed collision."""
+    import stim
+    from emlint.frontends import from_stim_dem
+
+    dem = stim.DetectorErrorModel(
+        "error(0.001) D2 ^ D0\nerror(0.002) D2 ^ D0\ndetector D0\ndetector D2"
+    )
+    model = from_stim_dem(dem)
+    result = assert_failed(check_duplicates(model))
+    group = result.counter_example_data["groups"][0]
+    assert group["decompositions"] == [("decomposed", (((2,), ()), ((0,), ())))]
+
+
 # ---------------------------------------------------------------------------
 # Multiple distinct duplicate groups
 # ---------------------------------------------------------------------------
@@ -263,6 +315,86 @@ def test_counter_example_data_not_truncated_when_counter_example_is():
     assert "more" in result.counter_example
     # But counter_example_data must have all mechanisms
     assert len(result.counter_example_data["mechanisms"]) == n * 2
+
+
+# ---------------------------------------------------------------------------
+# Counter-example readability
+# ---------------------------------------------------------------------------
+
+
+def test_counter_example_is_one_line_per_group():
+    """Each duplicate group occupies exactly one line, not joined prose."""
+    mechs = [
+        _mech(0.1, detectors=frozenset({0, 1})),
+        _mech(0.2, detectors=frozenset({0, 1})),
+        _mech(0.3, detectors=frozenset({2})),
+        _mech(0.4, detectors=frozenset({2})),
+    ]
+    ce = assert_failed(check_duplicates(_model(*mechs))).counter_example
+    lines = [line for line in ce.split("\n") if line]
+    assert len(lines) == 2
+    assert all(line.startswith("signature ") for line in lines)
+
+
+def test_counter_example_has_no_detector_coordinates():
+    """Coordinates are demoted to counter_example_data; text stays scannable."""
+    mechs = [
+        _mech(0.1, detectors=frozenset({0})),
+        _mech(0.2, detectors=frozenset({0})),
+    ]
+    result = assert_failed(check_duplicates(_model(*mechs)))
+    assert "@" not in result.counter_example
+    groups = result.counter_example_data["groups"]
+    assert groups[0]["signature"] == ["D0"]
+
+
+def test_counter_example_signature_truncated_to_three_targets():
+    """Signatures wider than three targets are truncated with a +more suffix."""
+    mechs = [
+        _mech(0.1, detectors=frozenset({0, 1, 2, 3, 4})),
+        _mech(0.2, detectors=frozenset({0, 1, 2, 3, 4})),
+    ]
+    result = assert_failed(check_duplicates(_model(*mechs)))
+    assert "D0 D1 D2 ...(+2 more): " in result.counter_example
+    # The full signature is preserved in counter_example_data.
+    assert result.counter_example_data["groups"][0]["signature"] == [
+        "D0",
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+    ]
+
+
+def test_counter_example_data_groups_carry_coordinates_and_fusion():
+    mechs = [
+        _mech(0.1, detectors=frozenset({0})),
+        _mech(0.2, detectors=frozenset({0})),
+    ]
+    model = ErrorModel(
+        detectors={0},
+        observables=set(),
+        error_mechanisms=list(mechs),
+        detector_coords={0: (1.0, 2.0)},
+    )
+    result = assert_failed(check_duplicates(model))
+    group = result.counter_example_data["groups"][0]
+    assert group["signature"] == ["D0"]
+    assert group["detector_coordinates"] == ["D0@(1,2)"]
+    assert group["probabilities"] == [0.1, 0.2]
+    # 0.1 XOR 0.2 = 0.1*0.8 + 0.2*0.9 = 0.26
+    assert math.isclose(group["p_fused"], 0.26)
+
+
+def test_counter_example_data_groups_complete_when_counter_example_truncated():
+    """Every duplicate group appears in counter_example_data groups, even beyond max_shown."""
+    n = _MAX_SHOWN + 3
+    mechs = []
+    for i in range(n):
+        mechs.append(_mech(0.1, detectors=frozenset({i})))
+        mechs.append(_mech(0.2, detectors=frozenset({i})))
+    result = assert_failed(check_duplicates(_model(*mechs)))
+    assert len(result.counter_example_data["groups"]) == n
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +488,7 @@ def test_counter_example_data_mechanism_strings_contain_detector_and_probability
 
 
 def test_duplicate_with_coordinates_uses_annotated_label():
-    """When detector_coords is set, the duplicate counter-example must use 'Dn@(x,y,z)' format."""
+    """When detector_coords is set, coordinates must appear in counter_example_data, not the text counter-example."""
     m0 = _mech(0.1, detectors=frozenset({5}), observables=frozenset())
     m1 = _mech(0.2, detectors=frozenset({5}), observables=frozenset())
     model = ErrorModel(
@@ -367,7 +499,9 @@ def test_duplicate_with_coordinates_uses_annotated_label():
     )
     result = assert_failed(check_duplicates(model))
     assert not result.passed
-    assert "D5@(2,1,0)" in result.counter_example
+    assert "@" not in result.counter_example
+    group = result.counter_example_data["groups"][0]
+    assert group["detector_coordinates"] == ["D5@(2,1,0)"]
 
 
 def test_duplicate_without_coordinates_uses_plain_label():
@@ -467,8 +601,7 @@ def test_signature_collision_message_on_canonical_stim_dem():
         rounds=3,
         after_clifford_depolarization=0.001,
     ).detector_error_model(decompose_errors=True)
-    result = check_duplicates(_model_from_stim(dem))
-    assert not result.passed
+    result = assert_failed(check_duplicates(_model_from_stim(dem)))
     assert "signature collision" in result.message
     assert "concatenating sub-circuit DEMs" in result.message
     assert result.counter_example_data["location_count"] >= 1
@@ -544,3 +677,198 @@ def test_dem_assembly_monolithic_message_hint_consistent():
     # Concatenated: XOR instruction kept, hint unchanged from the default.
     assert "XOR-folded" in c.message
     assert c.hint == d.hint
+
+
+# ---------------------------------------------------------------------------
+# Truncation boundaries (off-by-one mutants survive)
+# ---------------------------------------------------------------------------
+
+
+def test_duplicates_truncation_boundary_exactly_max_shown():
+    """Exactly _MAX_SHOWN duplicate groups must render all of them with no
+    overflow note. (Catches the `>`→`>=` truncation mutant.)"""
+    mechs = []
+    for i in range(_MAX_SHOWN):
+        mechs.append(ErrorMechanism(0.1, frozenset({i}), frozenset()))
+        mechs.append(ErrorMechanism(0.2, frozenset({i}), frozenset()))
+    model = _model(*mechs)
+    result = assert_failed(check_duplicates(model))
+    assert "more" not in result.counter_example
+    assert f"D{_MAX_SHOWN - 1}" in result.counter_example
+
+
+def test_duplicates_target_truncation_at_exactly_three_targets():
+    """A duplicate group with exactly 3 detectors must NOT be ellipsized.
+    (Catches the `len>3`→`len>=3` mutant.)"""
+    m1 = ErrorMechanism(0.1, frozenset({0, 1, 2}), frozenset())
+    m2 = ErrorMechanism(0.2, frozenset({0, 1, 2}), frozenset())
+    result = assert_failed(check_duplicates(_model(m1, m2)))
+    assert "D0 D1 D2" in result.counter_example
+    assert "..." not in result.counter_example
+
+
+def test_duplicates_target_truncation_at_four_targets():
+    """A duplicate group with 4 detectors must ellipsize to 3 + overflow note.
+    (Catches the `>3`→`>4` mutant that fails to truncate at 4.)"""
+    m1 = ErrorMechanism(0.1, frozenset({0, 1, 2, 3}), frozenset())
+    m2 = ErrorMechanism(0.2, frozenset({0, 1, 2, 3}), frozenset())
+    result = assert_failed(check_duplicates(_model(m1, m2)))
+    assert "D0 D1 D2" in result.counter_example
+    assert "(+1 more)" in result.counter_example
+
+
+# ---------------------------------------------------------------------------
+# apply_duplicates_dem_assembly guard clauses
+# ---------------------------------------------------------------------------
+
+
+def test_apply_duplicates_dem_assembly_noop_on_non_duplicates_result():
+    """The context gate must be a no-op for a non-duplicates verdict.
+    (Catches the `or`→`and` guard mutant.)"""
+    result = PropertyResult(
+        name="sensitivity",
+        passed=False,
+        severity="warning",
+        message="x",
+        counter_example="ce",
+        counter_example_data={"signature_count": 2, "location_count": 1},
+    )
+    apply_duplicates_dem_assembly(result, "concatenated")
+    assert result.message == "x"
+
+
+def test_apply_duplicates_dem_assembly_noop_when_counts_missing():
+    """The context gate must be a no-op when signature_count/location_count are
+    absent. (Catches the `or`→`and` guard mutant.)"""
+    result = PropertyResult(
+        name="duplicates",
+        passed=False,
+        severity="warning",
+        message="x",
+        counter_example="ce",
+        counter_example_data={"signature_count": 2},  # missing location_count
+    )
+    apply_duplicates_dem_assembly(result, "concatenated")
+    assert result.message == "x"
+
+
+def test_apply_duplicates_dem_assembly_noop_on_passing_result():
+    """The context gate must not rewrite a passing result."""
+    result = PropertyResult(
+        name="duplicates", passed=True, severity="warning", message="ok"
+    )
+    apply_duplicates_dem_assembly(result, "concatenated")
+    assert result.message == "ok"
+
+
+def test_apply_duplicates_dem_assembly_noop_on_unknown_assembly():
+    """An undeclared/unknown dem_assembly value must be a no-op."""
+    result = check_duplicates(_model(_mech(0.1), _mech(0.2)))
+    assert not result.passed
+    original = result.message
+    apply_duplicates_dem_assembly(result, "mystery_assembly")
+    assert result.message == original
+
+
+def test_apply_duplicates_dem_assembly_concatenated_rewrites_message():
+    """For concatenated assembly, the message selects the double-counting claim
+    and keeps the XOR-fold instruction."""
+    result = check_duplicates(_model(_mech(0.1), _mech(0.2)))
+    assert not result.passed
+    apply_duplicates_dem_assembly(result, "concatenated")
+    assert "double-counted" in result.message or "more than once" in result.message
+    assert "XOR-fold" in result.message
+
+
+def test_apply_duplicates_dem_assembly_monolithic_rewrites_message():
+    """For monolithic assembly, the message states the benign-collision claim
+    without the XOR-fold imperative."""
+    result = check_duplicates(_model(_mech(0.1), _mech(0.2)))
+    assert not result.passed
+    apply_duplicates_dem_assembly(result, "monolithic")
+    assert "monolithic" in result.message
+    assert "XOR-fold" not in result.message
+
+
+# ---------------------------------------------------------------------------
+# Adversarial edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_duplicates_xor_fold_with_nan_probability_propagates():
+    """A NaN probability in a duplicate group must propagate through the
+    XOR-fold (NaN ⊕ p = NaN), not silently produce a finite value."""
+    m1 = _mech(float("nan"))
+    m2 = _mech(0.2)
+    result = assert_failed(check_duplicates(_model(m1, m2)))
+    groups = result.counter_example_data["groups"]
+    assert math.isnan(groups[0]["p_fused"])
+
+
+def test_duplicates_xor_fold_with_inf_probability():
+    """An infinite probability in a duplicate group must not crash the fold.
+
+    inf ⊕ 0.2 = inf*(1-0.2) + 0.2*(1-inf) = inf - inf = NaN, which is the
+    mathematically correct indeterminate result; the fold must not raise.
+    """
+    m1 = _mech(float("inf"))
+    m2 = _mech(0.2)
+    result = assert_failed(check_duplicates(_model(m1, m2)))
+    groups = result.counter_example_data["groups"]
+    assert math.isnan(groups[0]["p_fused"])
+
+
+def test_duplicates_mixed_decomposition_group_is_marked():
+    """A signature produced by both a plain and a decomposed mechanism is a
+    mixed collision and must be flagged as such. Two mixed groups must both be
+    counted (catches the `mixed_groups += 1`→`= 1` mutant)."""
+
+    def mixed_pair(det, obs):
+        plain = ErrorMechanism(0.1, frozenset({det}), frozenset({obs}))
+        decomposed = ErrorMechanism(
+            0.2,
+            frozenset({det}),
+            frozenset({obs}),
+            decomposition_hints=((frozenset({det}), frozenset({obs})),),
+        )
+        return plain, decomposed
+
+    mechs = []
+    for det, obs in [(0, 0), (1, 1)]:
+        mechs.extend(mixed_pair(det, obs))
+    result = assert_failed(check_duplicates(_model(*mechs)))
+    assert result.counter_example_data["mixed_group_count"] == 2
+    assert "[mixed decomposition]" in result.counter_example
+
+
+def test_duplicates_detection_requires_at_least_two_instances():
+    """A signature appearing exactly once is NOT a duplicate. (Catches the
+    `state[0] > 1`→`>= 1` mutant that flags single instances.)"""
+    result = check_duplicates(_model(_mech(0.1, frozenset({0}))))
+    assert result.passed
+
+
+def test_duplicates_symbolic_path_reports_within_body_duplicates():
+    """The symbolic reduction (no cross-iteration overlap) must still report
+    duplicates that occur *within* the repeat body itself."""
+    # Two mechanisms in the body share the same signature; the symbolic path
+    # reduces the body and must flag the within-body duplicate.
+    body = (
+        ErrorMechanism(0.1, frozenset({0}), frozenset()),
+        ErrorMechanism(0.2, frozenset({0}), frozenset()),
+    )
+    block = RepeatBlock(
+        body, count=3, detector_offset_per_iteration=10, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(40)), observables=set(), error_mechanisms=[block]
+    )
+    result = assert_failed(check_duplicates(model))
+    assert result.counter_example_data["signature_count"] >= 3
+
+
+def test_duplicates_empty_signature_group():
+    """Two mechanisms with empty detector AND observable sets share the empty
+    signature and must be flagged as duplicates."""
+    result = assert_failed(check_duplicates(_model(_mech(0.1), _mech(0.2))))
+    assert "(no detectors)" in result.counter_example

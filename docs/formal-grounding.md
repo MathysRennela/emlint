@@ -93,6 +93,27 @@ This is not a general code-distance theorem. It does not analyze combinations
 of co-occurring mechanisms or prove that a decoder succeeds on every physical
 fault pattern.
 
+## Counter-example index convention
+
+When a check names a detector (`D17`), a mechanism, or an observable (`L0`), the
+index is the index **in the detector error model you supplied**, made absolute.
+Concretely: emlint applies `shift_detectors` offsets and expands repeat blocks, so
+the indices it reports correspond to `dem.flattened()`. emlint performs no
+canonicalization, no merging of mechanisms with equal detector signatures, and no
+reordering of mechanisms, detectors, or observables.
+
+This matters most for machine-generated DEMs. Fault-tolerant compiler pipelines
+that compose detector error models from stored per-gadget artifacts bind
+probabilities and canonicalize detector numbering as part of a single contract,
+so a canonicalized input has canonical indices. If you lint a DEM that has been
+canonicalized, emlint reports those indices unchanged — which is what you want,
+but only if the numbering is stated rather than assumed.
+
+If emlint ever gains a normalization or canonicalization step, this section
+becomes false and the convention must instead be reported as a field in the
+`Report` (text, JSON, and SARIF), with the normalization applied. It is recorded
+here as a contract term, not as a pending feature.
+
 ## Scope of the properties
 
 These are properties of the DEM representation supplied to emlint. They do not

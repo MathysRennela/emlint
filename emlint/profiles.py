@@ -66,6 +66,7 @@ PROFILES: dict[str, Profile] = {
             "correctability",
             "detectability",
             "duplicates",
+            "null_mechanism",
             "observable_coverage",
             "probability_bounds",
             "sensitivity",

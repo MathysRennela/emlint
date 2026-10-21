@@ -5,7 +5,7 @@ from typing import Any, Callable, cast
 
 import pytest
 import stim
-from hypothesis import given
+from hypothesis import given, settings
 import hypothesis.strategies as st
 
 import emlint
@@ -15,14 +15,17 @@ from emlint.checks import (
     check_correctability,
     check_detectability,
     check_duplicates,
+    check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
     check_sensitivity,
+    _cross_scope_reduction,
     _format_mech,
     _iter_repeat_templates,
     _iter_scope_mechanisms,
     _reduce_cross_scope_mechanisms,
     _shift_mechanism,
+    _symbolic_cross_scope_reduction,
     _template_multiplicity,
 )
 from emlint.model import ErrorMechanism, ErrorModel, RepeatBlock
@@ -79,6 +82,18 @@ def _assert_same_oracle_result(check, model: ErrorModel) -> None:
             }
         assert set(optimized.counter_example_data["mechanisms"]) == expected
         assert set(oracle.counter_example_data["mechanisms"]) >= expected
+    if check is check_null_mechanism and not optimized.passed:
+        # The optimized path reports one witness per template plus the
+        # multiplicity; the flat oracle reports one entry per instance. The
+        # instance counts must agree exactly, and every template witness must
+        # appear among the oracle's expanded witnesses.
+        assert (
+            optimized.counter_example_data["instance_count"]
+            == oracle.counter_example_data["instance_count"]
+        )
+        assert set(optimized.counter_example_data["mechanisms"]) <= set(
+            oracle.counter_example_data["mechanisms"]
+        )
     if check is check_observable_coverage:
         assert optimized.counter_example_data == oracle.counter_example_data
 
@@ -90,6 +105,7 @@ _OPTIMIZED_CHECKS = (
     check_sensitivity,
     check_duplicates,
     check_correctability,
+    check_null_mechanism,
 )
 
 
@@ -146,6 +162,7 @@ def test_sensitivity_edges_match_flattened_oracle(stride: int, count: int) -> No
         check_sensitivity,
         check_duplicates,
         check_correctability,
+        check_null_mechanism,
     ],
 )
 def test_negative_absolute_detector_id_raises_uniformly(check) -> None:
@@ -176,6 +193,7 @@ def test_non_exact_repeat_count_raises_through_all_checks(bad_count) -> None:
         check_sensitivity,
         check_duplicates,
         check_correctability,
+        check_null_mechanism,
     ):
         with pytest.raises(TypeError):
             check(invalid)
@@ -390,6 +408,7 @@ def test_all_optimized_checks_use_the_same_flattened_oracle_contract() -> None:
         check_probability_bounds,
         check_observable_coverage,
         check_sensitivity,
+        check_null_mechanism,
     ):
         _assert_same_oracle_result(check, model)
 
@@ -411,6 +430,7 @@ def test_nested_template_data_matches_flattened_oracle() -> None:
         check_probability_bounds,
         check_observable_coverage,
         check_sensitivity,
+        check_null_mechanism,
     ):
         _assert_same_oracle_result(check, model)
 
@@ -436,6 +456,7 @@ def test_nested_checks_match_flattened_oracle() -> None:
         check_sensitivity,
         check_duplicates,
         check_correctability,
+        check_null_mechanism,
     )
     for check in checks:
         optimized = check(model)
@@ -474,6 +495,7 @@ def test_real_stim_repeat_dem_matches_flattened_oracle() -> None:
             check_probability_bounds,
             check_observable_coverage,
             check_sensitivity,
+            check_null_mechanism,
         ):
             optimized = check(source)
             oracle = check(flat)
@@ -1129,3 +1151,176 @@ def test_symbolic_path_skipped_for_zero_stride():
     model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[block])
     result = assert_failed(check_duplicates(model))
     assert len(result.counter_example_data["mechanisms"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Symbolic cross-scope reduction: differential testing vs exact flattening
+# ---------------------------------------------------------------------------
+
+
+def _assert_symbolic_matches_exact(model: ErrorModel) -> None:
+    """If the symbolic path returns a reduction, it must match the exact one
+    on both signature states and conflicts (the two predicates it feeds)."""
+    symbolic = _symbolic_cross_scope_reduction(model)
+    exact = _cross_scope_reduction(model)
+    if symbolic is None:
+        # Fallback: the exact reduction is authoritative; nothing to compare.
+        return
+    assert symbolic.signature_states == exact.signature_states, (
+        "symbolic reduction diverges from exact flattened reduction on "
+        "signature states"
+    )
+    assert (
+        symbolic.conflicts == exact.conflicts
+    ), "symbolic reduction diverges from exact flattened reduction on conflicts"
+
+
+def test_symbolic_reduction_matches_exact_on_overlapping_iterations():
+    """When two iterations' mechanisms share a detector set, the symbolic path
+    must fall back (return None) — a non-None reduction here would silently
+    miscount the duplicate. (Catches the `==`→`!=` overlap-detection mutant.)"""
+    body = (
+        ErrorMechanism(0.1, frozenset({0}), frozenset()),
+        ErrorMechanism(0.2, frozenset({2}), frozenset()),
+    )
+    block = RepeatBlock(
+        body, count=3, detector_offset_per_iteration=2, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(20)), observables=set(), error_mechanisms=[block]
+    )
+    symbolic = _symbolic_cross_scope_reduction(model)
+    assert symbolic is None, (
+        "iterations overlap (D2 appears in iter0 and iter1); the symbolic "
+        "path must fall back"
+    )
+    _assert_symbolic_matches_exact(model)
+
+
+def test_symbolic_reduction_matches_exact_on_nested_body():
+    """A body containing a nested RepeatBlock must force the symbolic path to
+    fall back — proceeding would silently drop the nested block's mechanisms.
+    (Catches the `not isinstance`→`isinstance` guard inversion.)"""
+    inner = RepeatBlock(
+        (ErrorMechanism(0.1, frozenset({0}), frozenset()),),
+        count=2,
+        detector_offset_per_iteration=1,
+        absolute_start_offset=0,
+    )
+    block = RepeatBlock(
+        (inner,), count=3, detector_offset_per_iteration=1, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(20)), observables=set(), error_mechanisms=[block]
+    )
+    assert _symbolic_cross_scope_reduction(model) is None
+    _assert_symbolic_matches_exact(model)
+
+
+@given(
+    count=st.integers(min_value=2, max_value=6),
+    stride=st.integers(min_value=1, max_value=4),
+    d0=st.integers(min_value=0, max_value=6),
+    d1=st.integers(min_value=0, max_value=6),
+)
+@settings(max_examples=300)
+def test_symbolic_reduction_always_matches_exact(count, stride, d0, d1):
+    """For every two-mechanism repeat body, the symbolic reduction either falls
+    back or matches the exact flattened reduction exactly. This is the core
+    differential property; it catches span/stride/max_delta boundary mutants."""
+    body = (
+        ErrorMechanism(0.1, frozenset({d0}), frozenset()),
+        ErrorMechanism(0.2, frozenset({d1}), frozenset()),
+    )
+    block = RepeatBlock(
+        body, count=count, detector_offset_per_iteration=stride, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(30)), observables=set(), error_mechanisms=[block]
+    )
+    _assert_symbolic_matches_exact(model)
+
+
+@given(
+    count=st.integers(min_value=2, max_value=5),
+    stride=st.integers(min_value=-4, max_value=-1),
+    d0=st.integers(min_value=16, max_value=22),
+    d1=st.integers(min_value=16, max_value=22),
+)
+@settings(max_examples=200)
+def test_symbolic_reduction_matches_exact_with_negative_stride(count, stride, d0, d1):
+    """Negative strides (shift_detectors decrementing) must be handled the same
+    as positive ones; the symbolic path uses abs(stride) for the span bound.
+    Detector IDs are chosen large enough that the negative stride never drives
+    an absolute ID below zero (which the validator rejects)."""
+    body = (
+        ErrorMechanism(0.1, frozenset({d0}), frozenset()),
+        ErrorMechanism(0.2, frozenset({d1}), frozenset()),
+    )
+    block = RepeatBlock(
+        body, count=count, detector_offset_per_iteration=stride, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(40)), observables=set(), error_mechanisms=[block]
+    )
+    _assert_symbolic_matches_exact(model)
+
+
+def test_symbolic_reduction_zero_stride_falls_back():
+    """A zero stride (no shift_detectors) must fall back to the exact path."""
+    body = (
+        ErrorMechanism(0.1, frozenset({0}), frozenset()),
+        ErrorMechanism(0.2, frozenset({1}), frozenset()),
+    )
+    block = RepeatBlock(
+        body, count=3, detector_offset_per_iteration=0, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(10)), observables=set(), error_mechanisms=[block]
+    )
+    assert _symbolic_cross_scope_reduction(model) is None
+    _assert_symbolic_matches_exact(model)
+
+
+def test_symbolic_reduction_matches_exact_on_disjoint_iterations():
+    """When iterations are far apart (span < stride), no overlap is possible
+    and the symbolic path may return a reduction — it must equal the exact one."""
+    body = (ErrorMechanism(0.1, frozenset({0}), frozenset()),)
+    block = RepeatBlock(
+        body, count=3, detector_offset_per_iteration=10, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(40)), observables=set(), error_mechanisms=[block]
+    )
+    symbolic = _symbolic_cross_scope_reduction(model)
+    assert symbolic is not None
+    _assert_symbolic_matches_exact(model)
+
+
+def test_symbolic_reduction_matches_exact_on_three_mechanism_body():
+    """Three mechanisms in the body exercise more delta combinations."""
+    body = (
+        ErrorMechanism(0.1, frozenset({0}), frozenset()),
+        ErrorMechanism(0.2, frozenset({3}), frozenset()),
+        ErrorMechanism(0.3, frozenset({6}), frozenset()),
+    )
+    block = RepeatBlock(
+        body, count=4, detector_offset_per_iteration=3, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(30)), observables=set(), error_mechanisms=[block]
+    )
+    _assert_symbolic_matches_exact(model)
+
+
+def test_symbolic_reduction_matches_exact_with_nonzero_start_offset():
+    """A nonzero absolute_start_offset shifts all iterations; the reduction
+    must still match the exact flattened result."""
+    body = (ErrorMechanism(0.1, frozenset({0}), frozenset()),)
+    block = RepeatBlock(
+        body, count=3, detector_offset_per_iteration=2, absolute_start_offset=5
+    )
+    model = ErrorModel(
+        detectors=set(range(30)), observables=set(), error_mechanisms=[block]
+    )
+    _assert_symbolic_matches_exact(model)

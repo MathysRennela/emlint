@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emlint"
-version = "0.2.2"
+version = "0.2.3"
 description = "A static analysis tool for quantum error correction"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,8 +38,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "hypothesis", "black", "pytest-cov", "mutmut"]
+dev = ["pytest", "hypothesis", "black", "pytest-cov", "mutmut", "mkdocs-material"]
 benchmark = ["pytest", "hypothesis", "qldpc"]
+demo = ["jupytext", "nbmake", "ipykernel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

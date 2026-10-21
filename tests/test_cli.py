@@ -14,6 +14,7 @@ import sys
 import pytest
 
 from emlint.cli import _build_parser, main
+from emlint.profiles import PROFILES, Profile
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -129,6 +130,42 @@ def test_json_format_all_passed_field(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Vacuity disclosure
+# ---------------------------------------------------------------------------
+
+
+def test_empty_dem_is_disclosed_as_vacuous(tmp_path):
+    """A mechanism-free DEM must be disclosed, not read as a clean audit."""
+    dem_file = tmp_path / "empty.dem"
+    dem_file.write_text("")
+    result = _run(["check", str(dem_file)])
+    assert "[vacuous]" in result.stdout
+    assert "no error mechanisms" in result.stdout
+
+
+def test_empty_dem_vacuity_disclosure_keeps_exit_0(tmp_path):
+    """The disclosure is report-layer only: it carries no severity."""
+    dem_file = tmp_path / "empty.dem"
+    dem_file.write_text("")
+    result = _run(["check", str(dem_file)])
+    assert result.returncode == 0
+
+
+def test_non_empty_dem_has_no_vacuity_disclosure(tmp_path):
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run(["check", str(dem_file)])
+    assert "[vacuous]" not in result.stdout
+
+
+def test_json_output_carries_vacuity_flag(tmp_path):
+    dem_file = tmp_path / "empty.dem"
+    dem_file.write_text("")
+    result = _run(["check", str(dem_file), "--format", "json"])
+    assert json.loads(result.stdout)["is_vacuous"] is True
+
+
+# ---------------------------------------------------------------------------
 # --check filter
 # ---------------------------------------------------------------------------
 
@@ -232,6 +269,7 @@ def test_unparseable_dem_has_distinct_exit_code():
     result = _run(["check", "this is not a DEM"])
     assert result.returncode == 3
     assert "unable to lint input" in result.stderr
+    assert "No static checks were run." in result.stderr
 
 
 def test_directory_input_has_distinct_exit_code(tmp_path):
@@ -435,3 +473,199 @@ def test_filtered_output_preserves_unknown_instructions(
     result = _run(["check", str(dem_file), "--format", "json", "--severity", "error"])
     data = json.loads(result.stdout)
     assert data["unknown_instructions"] == ["adaptive_metadata"]
+
+
+# ---------------------------------------------------------------------------
+# Configuration validation error paths
+# ---------------------------------------------------------------------------
+
+
+def test_cli_rejects_non_table_tool_emlint(tmp_path):
+    """[tool.emlint] must be a TOML table (catches the uncovered TypeError)."""
+    # foo=1 is a valid table; to force the error we need a non-table value.
+    (tmp_path / "pyproject.toml").write_text("tool = { emlint = 'not-a-table' }\n")
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "Invalid project configuration" in result.stderr
+
+
+def test_cli_rejects_context_not_a_table(tmp_path):
+    """[tool.emlint] context must be a TOML table."""
+    (tmp_path / "pyproject.toml").write_text("[tool.emlint]\ncontext = 'not-a-table'\n")
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "context must be a TOML table" in result.stderr
+
+
+def test_cli_rejects_severity_overrides_not_a_table(tmp_path):
+    """[tool.emlint] severity_overrides must be a TOML table."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.emlint]\nseverity_overrides = 'nope'\n"
+    )
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "severity_overrides must be a table" in result.stderr
+
+
+def test_cli_rejects_invalid_context_entry(tmp_path):
+    """A malformed --context entry (no '=') must be rejected."""
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run(["check", str(dem_file), "--context", "noequals"])
+    assert result.returncode != 0
+    assert "Invalid --context" in result.stderr
+
+
+def test_cli_rejects_check_and_only_together(tmp_path):
+    """--check and --only cannot be used together."""
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run(
+        ["check", str(dem_file), "--check", "detectability", "--only", "sensitivity"]
+    )
+    assert result.returncode != 0
+    assert "--check and --only cannot be used together" in result.stderr
+
+
+def test_cli_rejects_unknown_profile(tmp_path):
+    """An unknown --profile must be rejected."""
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run(["check", str(dem_file), "--profile", "no-such-profile"])
+    assert result.returncode != 0
+    assert "Unknown profile" in result.stderr
+
+
+def test_cli_rejects_invalid_format_setting(tmp_path):
+    """An invalid format in project settings must be rejected."""
+    (tmp_path / "pyproject.toml").write_text("[tool.emlint]\nformat = 'xml'\n")
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "format must be one of" in result.stderr
+
+
+def test_cli_rejects_invalid_severity_setting(tmp_path):
+    """An invalid severity in project settings must be rejected."""
+    (tmp_path / "pyproject.toml").write_text("[tool.emlint]\nseverity = 'fatal'\n")
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "severity must be one of" in result.stderr
+
+
+def test_cli_rejects_invalid_override_severity(tmp_path):
+    """An invalid override severity value must be rejected."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.emlint]\n"
+        "[tool.emlint.severity_overrides]\n"
+        "observable_coverage = 'info'\n"
+    )
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "Invalid override severity" in result.stderr
+
+
+def test_cli_warns_when_override_has_no_effect(tmp_path):
+    """An override for a check that did not run must warn, not silently pass."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.emlint]\n"
+        "only = ['detectability']\n"
+        "[tool.emlint.severity_overrides]\n"
+        "observable_coverage = 'warning'\n"
+    )
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(
+        tmp_path, ["check", str(dem_file), "--allow-severity-downgrade"]
+    )
+    assert "had no effect" in result.stderr
+
+
+def test_cli_rejects_checks_outside_profile(tmp_path, monkeypatch):
+    """An explicit --only selection outside the profile must be rejected."""
+    monkeypatch.setitem(
+        PROFILES,
+        "audit-narrow",
+        Profile(
+            name="audit-narrow",
+            description="only detectability",
+            enabled_checks=("detectability",),
+        ),
+    )
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run(
+        [
+            "check",
+            str(dem_file),
+            "--profile",
+            "audit-narrow",
+            "--only",
+            "sensitivity",  # not in audit-narrow's enabled set
+        ]
+    )
+    assert result.returncode != 0
+    assert "outside profile" in result.stderr
+
+
+def test_cli_context_boolean_parsing(tmp_path):
+    """--context complete_syndrome=true must parse as a boolean and re-enable
+    detectability on an unsupported role."""
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run(
+        [
+            "check",
+            str(dem_file),
+            "--format",
+            "json",
+            "--context",
+            "circuit_role=state_preparation",
+            "--context",
+            "complete_syndrome=true",
+        ]
+    )
+    data = json.loads(result.stdout)
+    detectability = next(r for r in data["results"] if r["name"] == "detectability")
+    assert detectability["status"] == "verdict"
+
+
+def test_names_rejects_non_string_list():
+    """_names must reject a list containing non-strings (catches the uncovered
+    ValueError path)."""
+    from emlint.cli import _names
+
+    with pytest.raises(ValueError, match="check lists must be"):
+        _names([1, 2])
+
+
+def test_cli_rejects_non_string_only_list(tmp_path):
+    """A [tool.emlint] only list containing non-strings must be rejected as an
+    invalid project configuration (catches the uncovered config error path)."""
+    (tmp_path / "pyproject.toml").write_text("[tool.emlint]\nonly = [1, 2]\n")
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "Invalid project configuration" in result.stderr
+
+
+def test_cli_rejects_non_string_ignore_list(tmp_path):
+    """A [tool.emlint] ignore list containing non-strings must be rejected."""
+    (tmp_path / "pyproject.toml").write_text("[tool.emlint]\nignore = [1]\n")
+    dem_file = tmp_path / "ok.dem"
+    dem_file.write_text(PASSING_DEM)
+    result = _run_with_cwd(tmp_path, ["check", str(dem_file)])
+    assert result.returncode != 0
+    assert "Invalid project configuration" in result.stderr

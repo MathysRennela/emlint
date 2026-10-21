@@ -18,7 +18,7 @@ import hypothesis.strategies as st
 
 import emlint.checks as checks_module
 from emlint.checks import _MAX_SHOWN, check_correctability
-from emlint.model import ErrorMechanism, ErrorModel
+from emlint.model import ErrorMechanism, ErrorModel, RepeatBlock
 from helpers import _mech, _model, assert_failed
 
 # ---------------------------------------------------------------------------
@@ -538,3 +538,40 @@ def test_decomposed_three_components_l0_odd_no_conflict():
     )
     model = from_stim_dem(dem)
     assert check_correctability(model).passed
+
+
+# ---------------------------------------------------------------------------
+# Witness iteration labeling
+# ---------------------------------------------------------------------------
+
+
+def test_correctability_witness_iteration_defaults_to_zero():
+    """A top-level conflicting mechanism (no repeat path) must report iteration
+    (0,), not (1,). (Catches the `path or (0,)`→`(1,)` mutant.)"""
+    m1 = ErrorMechanism(0.1, frozenset({0}), frozenset({1}))
+    m2 = ErrorMechanism(0.1, frozenset({0}), frozenset({2}))
+    model = ErrorModel(detectors={0}, observables={1, 2}, error_mechanisms=[m1, m2])
+    result = assert_failed(check_correctability(model))
+    assert "iteration (0,)" in result.counter_example
+    assert "iteration (1,)" not in result.counter_example
+
+
+def test_correctability_witness_iteration_inside_repeat():
+    """A conflict that recurs across repeat iterations must report each actual
+    iteration index, not just the default (0,). (Catches the `path or (0,)`→
+    `(1,)` mutant that would mislabel top-level witnesses.)"""
+    body = (
+        ErrorMechanism(0.1, frozenset({0}), frozenset({1})),
+        ErrorMechanism(0.1, frozenset({0}), frozenset({2})),
+    )
+    # stride 0 keeps the detector at {0} in every iteration, so the conflict
+    # recurs in iteration 0 AND iteration 1, producing witnesses with both paths.
+    block = RepeatBlock(
+        body, count=2, detector_offset_per_iteration=0, absolute_start_offset=0
+    )
+    model = ErrorModel(
+        detectors=set(range(5)), observables={1, 2}, error_mechanisms=[block]
+    )
+    result = assert_failed(check_correctability(model))
+    assert "iteration (1,)" in result.counter_example
+    assert "iteration (0,)" in result.counter_example

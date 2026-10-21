@@ -200,6 +200,28 @@ def test_duplicates_violation_detected():
     assert not dups.passed
 
 
+def test_null_mechanism_violation_detected():
+    """A targetless mechanism must fail null_mechanism.
+
+    stim's circuit-to-DEM generator never emits one, but its parser preserves a
+    hand-written targetless ``error(p)``, so the input is reachable.
+    """
+    dem = stim.DetectorErrorModel("error(0.1)")
+    report = emlint.check(dem)
+    null = next(r for r in report.results if r.name == "null_mechanism")
+    assert not null.passed
+    assert null.severity == "warning"
+
+
+@pytest.mark.parametrize("distance", [3, 5])
+def test_null_mechanism_passes_on_generated_surface_codes(distance: int):
+    """A genuine surface-code DEM carries no null mechanism, at d=3 and d=5."""
+    dem = _make_dem("surface_code:rotated_memory_z", distance=distance)
+    report = emlint.check(dem)
+    null = next(r for r in report.results if r.name == "null_mechanism")
+    assert null.passed
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

@@ -375,3 +375,30 @@ def test_valid_probability_from_stim_dem_passes():
     dem = stim.DetectorErrorModel("error(0.1) D0\ndetector D0")
     model = from_stim_dem(dem)
     assert check_probability_bounds(model).passed
+
+
+# ---------------------------------------------------------------------------
+# Adversarial boundary cases
+# ---------------------------------------------------------------------------
+
+
+def test_probability_bounds_truncation_boundary_exactly_max_shown():
+    """Exactly _MAX_SHOWN violating mechanisms must render all of them.
+    (Catches the `len(lines)<max_shown`→`<=` mutant.)"""
+    mechs = [_mech(0.9, frozenset({i})) for i in range(_MAX_SHOWN)]
+    result = assert_failed(check_probability_bounds(_model(*mechs)))
+    assert "more" not in result.counter_example
+    assert f"D{_MAX_SHOWN - 1}" in result.counter_example
+
+
+def test_probability_bounds_negative_zero():
+    """-0.0 must be treated as zero (unphysical), not pass the (0, 0.5] bound."""
+    result = check_probability_bounds(_model(_mech(-0.0)))
+    assert not result.passed
+    assert result.severity == "error"
+
+
+def test_probability_bounds_tiny_positive_subnormal():
+    """The smallest positive subnormal float is > 0 and must pass."""
+    result = check_probability_bounds(_model(_mech(5e-324)))
+    assert result.passed

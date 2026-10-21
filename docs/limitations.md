@@ -21,11 +21,25 @@ A passing report does not prove that:
 - `sensitivity` can flag detectors that are intentionally unreachable;
 - `duplicates` can arise from legitimate code-family structure or DEM
   composition;
-- `correctability` can flag valid degeneracy or decomposition behavior.
+- `correctability` can flag valid degeneracy or decomposition behavior;
+- `null_mechanism` can flag an intentional no-op line in a hand-written DEM.
 
 Review the counter-example and the code family before treating a warning as a
 construction bug. Use `--severity error` when CI should report only the
 unconditional error-severity checks.
+
+## An empty audit is not a clean audit
+
+A DEM with no error mechanisms passes every production check, because there is
+nothing for a mechanism-level check to examine. The report discloses this as
+`[vacuous]`, and the JSON and SARIF outputs carry `is_vacuous: true`, so a
+mechanism-free DEM is not mistaken for a certified one.
+
+The disclosure covers the case the report can see: no error mechanisms at all.
+It does **not** compare the counts against *expected* detector and observable
+counts, because a bare DEM does not carry an expectation. A DEM that declares
+fewer detectors than the code needs is a different gap, and it is not covered
+here.
 
 ## Decomposition provenance
 
@@ -48,6 +62,6 @@ runtime in the number of repeat rounds.
 
 ## API stability
 
-The six production check names, the basic CLI, and the report formats are the
+The seven production check names, the basic CLI, and the report formats are the
 intended v0.2 user contract. Internal classes, traversal strategy, caching, and
 experimental checks may change before v1.0.

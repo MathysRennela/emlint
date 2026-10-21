@@ -14,6 +14,7 @@ from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from emlint.model import (
     ErrorMechanism,
@@ -71,6 +72,48 @@ def _consumer_signature(
     for cdets, _cobs in mechanism.decomposition_hints:
         dets |= cdets
     return (frozenset(dets), mechanism.observables)
+
+
+def _decomposition_structure(mechanism: ErrorMechanism) -> tuple:
+    """Return a canonical decomposition structure for component-aware reporting.
+
+    A plain (undecomposed) mechanism is ``("plain",)``. A ``^``-decomposed
+    mechanism is ``("decomposed", components)`` where ``components`` is the
+    sorted tuple of its per-component ``(detectors, observables)`` pairs.
+
+    Two mechanisms with the same merged signature but different decomposition
+    structures are distinct fault paths that collide only at the decoder-facing
+    (union) granularity, not true duplicates of the same path.
+    """
+
+    if not mechanism.decomposition_hints:
+        return ("plain",)
+    components = tuple(
+        (tuple(sorted(cdets)), tuple(sorted(cobs)))
+        for cdets, cobs in mechanism.decomposition_hints
+    )
+    return ("decomposed", components)
+
+
+def _decompositions_per_signature(
+    model: ErrorModel,
+) -> dict[tuple[frozenset[int], frozenset[int]], set[tuple]]:
+    """Map each merged signature to the distinct decomposition structures it spans.
+
+    Iterates the flattened mechanisms so the map is faithful to the decoder-
+    facing view: a signature is mixed when it is produced by mechanisms with
+    different decomposition structures, including collisions that only arise
+    across repeat iterations (a plain mechanism in one round and a decomposed
+    mechanism with the same merged signature in another). A signature whose set
+    has more than one element is a mixed group: distinct fault paths that
+    collide at the merged-signature granularity but are not true duplicates.
+    """
+
+    result: dict[tuple[frozenset[int], frozenset[int]], set[tuple]] = {}
+    for mechanism in model.flattened():
+        signature = _consumer_signature(mechanism)
+        result.setdefault(signature, set()).add(_decomposition_structure(mechanism))
+    return result
 
 
 def _reduce_cross_scope_mechanisms(
@@ -372,6 +415,13 @@ def _det_label(d: int, coords: dict[int, tuple[float, ...]]) -> str:
 def _xor_fold(probs: list[float]) -> float:
     """XOR-fold a list of probabilities: p1 ⊕ p2 ⊕ … = p1(1-p2) + p2(1-p1) iterated.
 
+    Two independent faults p and q that produce the same (detectors,
+    observables) signature are indistinguishable to a decoder and occur
+    exclusively-or — exactly one fires — so the fused probability is exclusive
+    addition, never plain addition. Derived in Blume-Kohout & Young,
+    arXiv:2504.14643 Eq. 22, under the independent-event model class; the same
+    derivation shows the fused attenuation a = -ln(1-2p) is just a_p + a_q.
+
     The identity element is 0.0 (no error), so an empty list returns 0.0.
     """
     if not probs:
@@ -643,10 +693,19 @@ def check_probability_bounds(
     """Verify every error mechanism has a probability in (0, 0.5].
 
     p = 0 is a no-op that should be pruned from the DEM.
-    p < 0, p = NaN or p = ±inf indicates a genuine (compiler) error.
+    p < 0, p = NaN or p = ±inf indicates a genuine error upstream. On compiler
+    output the culprit is the compiler; on syndrome-learned DEMs these values
+    are documented estimator outputs (partial hyperedge subtraction, negative
+    moment radicands, vanishing denominators — Takou & Brown,
+    arXiv:2510.23797, Eqs. 1, 2, 4), so on such input the finding names an
+    estimator bug instead.
+
     p > 0.5 is anomalous: for a physical single-fault channel the lower-probability
     branch should be used instead (p → 1−p), though valid use-cases such as
-    conditioned or adversarial models may legitimately exceed 0.5.
+    conditioned or adversarial models may legitimately exceed 0.5. The attenuation
+    formalism gives a second reason to flag it: a = −ln(1−2p) is undefined at
+    p ≥ 0.5, so such a mechanism falls outside the estimable model class of
+    Blume-Kohout & Young (arXiv:2504.14643).
 
     Severity: "error" when any probability is unphysical (NaN, ±inf, ≤ 0);
               "warning" when all violations are merely p > 0.5.
@@ -722,6 +781,12 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     XOR-folded rather than treated as independent entries; the XOR-fold is
     also the correct decoder-facing quantity for a shared signature.
 
+    Caveat: the XOR-fold assumes the entries are independent faults. If one
+    coherent fault was split into entries that co-occur in reality (the
+    model-class split), the correct fused rate is sin²(θ₁+θ₂) for single-axis
+    rotations — about twice the XOR-fold at small angles (Takou & Brown,
+    arXiv:2510.23797 §III.1). The reported p_eff is then a lower bound.
+
 
     Note on fused probabilities: the XOR-fold of probabilities that are all
     ≤ 0.5 never exceeds 0.5 (f(p,q) = p+q−2pq is maximized at (0.5, 0.5) =
@@ -751,23 +816,48 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             severity="warning",
             message="No duplicate mechanism signatures found.",
         )
+    decomps = _decompositions_per_signature(model)
     # Injectivity is violated if two distinct mechanisms share the same signature.
+    # One line per duplicate group; coordinates are kept in counter_example_data.
     lines = []
-    for (dets, obs), probs in list(duplicates.items())[:max_shown]:
-        targets = (
-            " ".join(_det_label(d, model.detector_coords) for d in sorted(dets))
-            or "(no detectors)"
-        )
-        obs_str = (" " + " ".join(f"L{o}" for o in sorted(obs))) if obs else ""
+    groups: list[dict[str, Any]] = []
+    mixed_groups = 0
+    for (dets, obs), probs in duplicates.items():
+        full_targets = [f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)]
+        coords = {
+            _det_label(d, model.detector_coords)
+            for d in sorted(dets)
+            if d in model.detector_coords
+        }
         p_fused = _xor_fold(probs)
-        prob_list = ", ".join(str(p) for p in probs)
-        lines.append(
-            f"error({prob_list}) share signature {targets}{obs_str}; "
-            f"XOR-fused probability is {p_fused:.6g}"
+        structures = sorted(decomps.get((dets, obs), {("plain",)}))
+        is_mixed = len(structures) > 1
+        if is_mixed:
+            mixed_groups += 1
+        groups.append(
+            {
+                "signature": full_targets or ["(no detectors)"],
+                "detector_coordinates": sorted(coords),
+                "probabilities": list(probs),
+                "p_fused": p_fused,
+                "decompositions": structures,
+            }
         )
-    counter = "; ".join(lines)
+        shown = full_targets[:3]
+        if len(full_targets) > 3:
+            shown = [
+                *shown,
+                f"...(+{len(full_targets) - len(shown)} more)",
+            ]
+        sig = " ".join(shown) or "(no detectors)"
+        prob_list = ", ".join(f"{p:.6g}" for p in probs)
+        mixed_tag = " [mixed decomposition]" if is_mixed else ""
+        lines.append(
+            f"signature {sig}{mixed_tag}: p = {{{prob_list}}} -> p_eff = {p_fused:.6g}"
+        )
+    counter = "\n".join(lines[:max_shown])
     if len(duplicates) > max_shown:
-        counter += f" (and {len(duplicates) - max_shown} more)"
+        counter += f"\n(and {len(duplicates) - max_shown} more)"
     all_dup_mechs: list[str] = []
     for (dets, obs), probs in duplicates.items():
         tgt = " ".join([f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)])
@@ -775,6 +865,13 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         for p in probs:
             all_dup_mechs.append(f"error({p}){tgt_str}")
     total_duplicate_signatures = len(duplicates) * reduction.multiplicity
+    mixed_clause = ""
+    if mixed_groups:
+        mixed_clause = (
+            f" {mixed_groups} of {len(duplicates)} group(s) are mixed "
+            f"(mechanisms with different decomposition structures share only "
+            f"the merged signature — distinct fault paths, not true duplicates)."
+        )
     result = PropertyResult(
         name="duplicates",
         passed=False,
@@ -788,13 +885,15 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"fault path may instead be double-counted. The decoder-facing "
             f"probability for a shared signature is the XOR-folded value "
             f"p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), shown per "
-            f"group in the counter-example."
+            f"group in the counter-example." + mixed_clause
         ),
         counter_example=counter,
         counter_example_data={
             "mechanisms": all_dup_mechs,
             "signature_count": total_duplicate_signatures,
             "location_count": len(duplicates),
+            "mixed_group_count": mixed_groups,
+            "groups": groups,
         },
         hint=(
             "Hypothesis: mechanisms sharing a full signature in the same "
@@ -802,7 +901,10 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             "without XOR-merging; the correct probability is the XOR-fused "
             "value shown in the counter-example. On decompose_errors=True "
             "output, an undecomposed and a ^-decomposed instruction can also "
-            "legitimately share a merged signature."
+            "legitimately share a merged signature; groups marked "
+            "'[mixed decomposition]' are distinct fault paths that collide "
+            "only at the merged-signature granularity and are not true "
+            "duplicates."
         ),
     )
     return result
@@ -888,6 +990,12 @@ def check_correctability(
     cases where two mechanisms, when they co-occur, produce a combined syndrome
     that maps to conflicting observable corrections — that is the code distance
     problem and is in general NP-hard to verify.
+
+    Scope: this check establishes that the syndrome-to-observable map is functional
+    over the mechanisms listed in the DEM. It does not establish that those
+    mechanisms span the physical process. If a single physical fault has been split
+    into independent DEM entries that in reality co-occur, the conflict it creates
+    is absent from the DEM and from this check.
 
     Note on decomposed mechanisms: syndromes are compared using the union over
     ``^``-decomposition components (the decoder-facing view), not the raw
@@ -980,6 +1088,82 @@ def check_correctability(
     )
 
 
+def check_null_mechanism(
+    model: ErrorModel, max_shown: int = _MAX_SHOWN
+) -> PropertyResult:
+    """Flag error mechanisms that trigger no detector and flip no observable.
+
+    Such a mechanism is a provable no-op: it contributes nothing to the
+    syndrome ``sigma = H * e`` and nothing to the observable flip
+    ``ell = L * e`` for any error vector ``e``, so no decoder can observe it and
+    no correction can depend on it. Stim's circuit-to-DEM generator never emits
+    one, but stim's parser and ``.flattened()`` preserve a hand-written
+    targetless ``error(p)``, and such a line passes every production check
+    silently.
+
+    **Severity boundary (binding).** The predicate is *empty support on both
+    sides*, never even detector weight. A mechanism flipping detectors
+    ``{d1, d2}`` does flip two syndrome bits; the claim that even detector
+    support "has no effect" is a statement about a decoder family's pairing
+    behaviour, not a property of the DEM. ``warning`` rather than ``error``
+    because a hand-written DEM may carry an intentional no-op line.
+
+    **Shift-invariance (why the check is template-local).** The predicate reads
+    only whether a mechanism's detector and observable support are *empty*, and
+    both are invariant under the detector-ID shift a repeat applies: shifting an
+    empty detector set keeps it empty, and observable IDs are never shifted.
+    Repetition therefore cannot create a violation that the template does not
+    already carry, so the check evaluates one template per mechanism position
+    and reports the instance count separately instead of expanding the repeat
+    body. This is the same argument that licenses ``detectability``'s
+    template-local path.
+
+    Property: no mechanism m satisfies det(m) = ∅ and obs(m) = ∅
+    """
+    violating_templates = [
+        template
+        for template in _iter_repeat_templates(model)
+        if not template.mechanism.detectors and not template.mechanism.observables
+    ]
+
+    if violating_templates:
+        violations = [
+            _shift_mechanism(template.mechanism, template.absolute_start)
+            for template in violating_templates
+        ]
+        total_instances = sum(
+            _template_multiplicity(template) for template in violating_templates
+        )
+        lines = [_format_mech(mech) for mech in violations[:max_shown]]
+        counter = "; ".join(lines)
+        if len(violations) > max_shown:
+            counter += f" (and {len(violations) - max_shown} more)"
+        return PropertyResult(
+            name="null_mechanism",
+            passed=False,
+            severity="warning",
+            message=(
+                f"Found {total_instances} null error mechanism instance(s) across "
+                f"{len(violations)} distinct location(s) that trigger no detector "
+                "and flip no observable. These are provable no-ops: they cannot "
+                "appear in any syndrome or observable flip, so no decoder can "
+                "observe them."
+            ),
+            counter_example=counter,
+            counter_example_data={
+                "mechanisms": [_format_mech(mech) for mech in violations],
+                "instance_count": total_instances,
+            },
+        )
+
+    return PropertyResult(
+        name="null_mechanism",
+        passed=True,
+        severity="warning",
+        message="No mechanism has empty detector and observable support.",
+    )
+
+
 # Check Registry
 LOCAL_CHECKS: dict[str, CheckFn] = {
     "detectability": check_detectability,
@@ -988,6 +1172,7 @@ LOCAL_CHECKS: dict[str, CheckFn] = {
     "probability_bounds": check_probability_bounds,
     "duplicates": check_duplicates,
     "correctability": check_correctability,
+    "null_mechanism": check_null_mechanism,
 }
 
 # ALL_CHECKS is the public registry used by emlint.check() and the CLI.

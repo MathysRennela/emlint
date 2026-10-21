@@ -9,10 +9,13 @@ from __future__ import annotations
 import pytest
 
 import emlint
+from emlint.checks import ALL_CHECKS
 from emlint.profiles import (
     PROFILES,
+    Profile,
     applicability_skip,
     applicability_skip_reason,
+    parse_context_value,
     validate_severity_override,
 )
 
@@ -58,6 +61,18 @@ def test_profile_restricts_battery_to_enabled_checks():
 def test_unknown_profile_raises_value_error():
     with pytest.raises(ValueError, match="Unknown profile"):
         emlint.check("error(0.1) D0", profile="no-such-profile")
+
+
+def test_report_is_stamped_with_profile():
+    """A PASS certificate is valid only relative to a declared context; the
+    producing profile must be stamped onto the report (certifier contract)."""
+    report = emlint.check("error(0.1) D0 L0\ndetector D0", profile="strict-dem")
+    assert report.profile == "strict-dem"
+
+
+def test_report_profile_is_none_without_profile():
+    report = emlint.check("error(0.1) D0 L0\ndetector D0")
+    assert report.profile is None
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +268,110 @@ def test_non_role_context_still_enforces_syndrome_requirement(extra):
         assert detectability.status == expected
     else:
         assert detectability.status == "verdict"
+
+
+# ---------------------------------------------------------------------------
+# Severity overrides: profile-declared, gated by the downgrade opt-in
+# ---------------------------------------------------------------------------
+
+
+PASSING_DEM = "error(0.1) D0 L0\ndetector D0\n"
+
+
+def _profile_with_override() -> Profile:
+    return Profile(
+        name="audit-override",
+        description="test profile with a severity override",
+        enabled_checks=("observable_coverage", "detectability"),
+        severity_overrides=(("observable_coverage", "warning"),),
+    )
+
+
+def test_profile_severity_override_downgrade_applied(monkeypatch):
+    """A profile-declared downgrade override must apply to the verdict when
+    allow_severity_downgrade is passed (catches the uncovered override path)."""
+    monkeypatch.setitem(PROFILES, "audit-override", _profile_with_override())
+    report = emlint.check(
+        "detector D0\nerror(0.1) D0 L1\n",  # L1 never flipped -> observable_coverage fails
+        profile="audit-override",
+        allow_severity_downgrade=True,
+    )
+    cov = next(r for r in report.results if r.name == "observable_coverage")
+    assert not cov.passed
+    assert cov.severity == "warning"  # downgraded from error
+    assert report.applied_overrides == {"observable_coverage": "error"}
+
+
+def test_profile_severity_override_downgrade_rejected_without_optin(monkeypatch):
+    """A profile downgrade without allow_severity_downgrade must raise."""
+    monkeypatch.setitem(PROFILES, "audit-override", _profile_with_override())
+    with pytest.raises(ValueError, match="downgrad"):
+        emlint.check(
+            "detector D0\nerror(0.1) D0 L1\n",
+            profile="audit-override",
+        )
+
+
+def test_profile_severity_override_upgrade_applied(monkeypatch):
+    """A profile upgrade of a deterministic check to error must apply."""
+    prof = Profile(
+        name="audit-upgrade",
+        description="test profile with an upgrade override",
+        enabled_checks=("observable_coverage",),
+        severity_overrides=(("observable_coverage", "error"),),
+    )
+    monkeypatch.setitem(PROFILES, "audit-upgrade", prof)
+    report = emlint.check(
+        "detector D0\nerror(0.1) D0 L1\n",
+        profile="audit-upgrade",
+    )
+    cov = next(r for r in report.results if r.name == "observable_coverage")
+    assert cov.severity == "error"
+
+
+def test_checks_outside_profile_raise(monkeypatch):
+    """Passing an explicit check selection outside the profile's enabled set
+    must raise (catches the uncovered dispatcher guard)."""
+    # All built-in profiles enable every check, so use a custom one.
+    monkeypatch.setitem(
+        PROFILES,
+        "audit-narrow",
+        Profile(
+            name="audit-narrow",
+            description="only detectability",
+            enabled_checks=("detectability",),
+        ),
+    )
+    with pytest.raises(ValueError, match="outside profile"):
+        emlint.check(
+            PASSING_DEM,
+            checks={"sensitivity": ALL_CHECKS["sensitivity"]},
+            profile="audit-narrow",
+        )
+
+
+# ---------------------------------------------------------------------------
+# parse_context_value and validate_severity_override units
+# ---------------------------------------------------------------------------
+
+
+def test_parse_context_value_booleans_and_strings():
+    """parse_context_value maps true/false to bool, everything else to str."""
+    assert parse_context_value("true") is True
+    assert parse_context_value("TRUE") is True
+    assert parse_context_value("false") is False
+    assert parse_context_value("False") is False
+    assert parse_context_value("memory") == "memory"
+    assert parse_context_value("0") == "0"
+
+
+def test_validate_severity_override_downgrade_rejected():
+    """A downgrade without allow_downgrade must raise (catches the uncovered
+    rejection path)."""
+    with pytest.raises(ValueError, match="downgrad"):
+        validate_severity_override("observable_coverage", "warning")
+
+
+def test_validate_severity_override_downgrade_allowed():
+    """A downgrade with allow_downgrade=True must pass."""
+    validate_severity_override("observable_coverage", "warning", allow_downgrade=True)

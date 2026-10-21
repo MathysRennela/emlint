@@ -1,17 +1,69 @@
 # emlint
 
 <div align="center">
-  <img src="docs/images/emlint_logo_with_name.png" alt="emlint logo" width="350">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/MathysRennela/emlint/main/docs/images/emlint_logo_with_name-dark.png">
+    <img src="https://raw.githubusercontent.com/MathysRennela/emlint/main/docs/images/emlint_logo_with_name.png" alt="emlint logo" width="350">
+  </picture>
 </div>
 
-[![PyPI](https://img.shields.io/pypi/v/emlint)](https://pypi.org/project/emlint/)
-[![CI](https://github.com/MathysRennela/emlint/actions/workflows/emlint.yml/badge.svg)](https://github.com/MathysRennela/emlint/actions/workflows/emlint.yml)
-[![Codecov](https://codecov.io/gh/MathysRennela/emlint/graph/badge.svg?branch=main)](https://codecov.io/gh/MathysRennela/emlint)
+<p align="center">
+  <a href="https://pypi.org/project/emlint/"><img src="https://img.shields.io/pypi/v/emlint.svg?color=blue" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/emlint/"><img src="https://img.shields.io/pypi/pyversions/emlint.svg" alt="Python versions"></a>
+  <a href="https://github.com/MathysRennela/emlint/actions/workflows/ci.yml"><img src="https://github.com/MathysRennela/emlint/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/MathysRennela/emlint"><img src="https://codecov.io/gh/MathysRennela/emlint/graph/badge.svg?branch=main" alt="Codecov"></a>
+  <a href="https://github.com/MathysRennela/emlint/tree/main/docs"><img src="https://img.shields.io/badge/docs-reference-blue.svg?logo=readthedocs&logoColor=white" alt="Documentation"></a>
+  <a href="https://github.com/MathysRennela/emlint/blob/main/LICENSE"><img src="https://img.shields.io/github/license/MathysRennela/emlint.svg" alt="License"></a>
+  <a href="https://pepy.tech/project/emlint"><img src="https://static.pepy.tech/badge/emlint" alt="Downloads"></a>
+</p>
 
 **stim simulates. sinter samples. emlint verifies.**
 
 emlint is a static linter for [Stim](https://github.com/quantumlib/Stim)
 Detector Error Models (DEMs). It finds structural problems before simulation.
+
+## Why emlint?
+
+- **Catch DEM bugs before the expensive simulation.** A silent DEM bug can
+  inflate logical error rates and may not surface until 10⁶ simulation shots
+  (≈45 min). emlint finds structural problems
+  in milliseconds.
+- **Counter-examples.** A failing check identifies the
+  offending mechanism, detector, or observable, so you know where to look.
+- **Severity that respects the stakes.** `error` findings are unconditional DEM
+  bugs; `warning` findings are heuristic or intentional-pattern candidates you
+  review before acting.
+- **Agent- and CI-friendly.** Exit codes distinguish clean, error, warning, and
+  unlintable input; JSON and SARIF output feed scripts and code-scanning tools.
+
+## See it in action
+
+A d=5 surface-code DEM with a missing detector connection
+([`examples/buggy.dem`](examples/buggy.dem)):
+
+```text
+$ emlint check examples/buggy.dem
+Detectors: 24  Observables: 1  Error mechanisms: 31
+
+  ✓ detectability: All error mechanisms that flip observables also trigger detectors.
+  ✗ [warning] sensitivity: 1 detector(s) are never triggered by any error mechanism.
+        Counter-example: Detector(s) not triggered by any error mechanism: D17@(1,0,2)
+        Hint: Hypothesis: a detector no mechanism ever triggers is either miswired or
+        redundant. Expected shape: at least one mechanism per stabilizer check per
+        round; look for a missing noise instruction on the gates feeding this detector,
+        or a DETECTOR declared on a comparison that never receives a fault.
+  ✓ observable_coverage: All declared observables are flipped by at least one error mechanism.
+  ✓ probability_bounds: All error mechanism probabilities are in (0, 0.5].
+  ✓ duplicates: No duplicate mechanism signatures found.
+  ✓ correctability: Every syndrome maps to at most one distinct set of logical observables.
+  ✓ null_mechanism: No mechanism has empty detector and observable support.
+```
+
+After reconnecting `D17` to its neighbours
+([`examples/fixed.dem`](examples/fixed.dem)), every check passes. The
+counter-example names the exact detector (`D17@(1,0,2)`) so the fix is
+localized. More generated examples live in
+[`examples/`](examples/README.md).
 
 > **v0.2 is preliminary.** The user-facing behavior is usable, but internal APIs
 > and implementation details may change before v1.0.
@@ -68,10 +120,11 @@ print(emlint.format_text(report))
 |---|---|
 | [CLI reference](docs/cli.md) | Commands, options, output, and exit codes |
 | [Agent integration guide](docs/agent-integration.md) | Running emlint in a coding-agent fix-loop: exit-code handling, JSON contract, context declaration |
-| [Check catalog](docs/checks.md) | What the six checks detect and how to interpret findings, plus the machine-readable output contract |
+| [Check catalog](docs/checks.md) | What the seven checks detect and how to interpret findings, plus the machine-readable output contract |
 | [Debugging guide](docs/debugging.md) | Check-specific causes and investigation steps |
 | [Formal grounding](docs/formal-grounding.md) | DEM vocabulary and formal properties |
 | [v0.2 limitations](docs/limitations.md) | Scope, warnings, repeat blocks, and provisional behavior |
+| [Changelog](CHANGELOG.md) | Version history and user-visible changes |
 
 > **Note:** on DEMs produced with `decompose_errors=True`, the `duplicates`
 > check (warning) may report mechanisms that share a detector signature after
@@ -125,8 +178,11 @@ check, test requirements, and quality gates.
 
 ## Acknowledgments
 
-emlint is developed with AI assistance for scaffolding, test generation, red-teaming, and documentation. All design decisions, technical content, and final code are reviewed and owned by the
-maintainers.
+emlint is developed with AI assistance for scaffolding, test generation,
+red-teaming, and documentation. All design decisions, technical content, and
+final code are reviewed and owned by the maintainers.
+
+## Funding
 
 This project is funded by a [Mozilla Foundation](https://foundation.mozilla.org/)
 fellowship and supported by the [Unitary Foundation](https://unitary.foundation/).

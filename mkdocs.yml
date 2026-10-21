@@ -1,0 +1,50 @@
+# MkDocs configuration for the emlint documentation site.
+# Build locally with:  mkdocs build
+# Deploy to GitHub Pages:  mkdocs gh-deploy  (or the docs.yml workflow)
+site_name: emlint
+site_description: A static linter for Stim Detector Error Models (DEMs)
+site_url: https://mathysrennela.github.io/emlint/
+repo_url: https://github.com/MathysRennela/emlint
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    # Light and dark variants, following the README logo treatment.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.tabbed
+  - tables
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - CLI reference: cli.md
+      - Check catalog: checks.md
+  - Guides:
+      - Debugging: debugging.md
+      - Agent integration: agent-integration.md
+  - Reference:
+      - Formal grounding: formal-grounding.md
+      - Limitations: limitations.md
