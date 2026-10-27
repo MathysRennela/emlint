@@ -872,3 +872,72 @@ def test_duplicates_empty_signature_group():
     signature and must be flagged as duplicates."""
     result = assert_failed(check_duplicates(_model(_mech(0.1), _mech(0.2))))
     assert "(no detectors)" in result.counter_example
+<<<<<<< HEAD
+=======
+
+
+# ---------------------------------------------------------------------------
+# Repeated targets inside one instruction (PECOS#800 portability gap)
+# ---------------------------------------------------------------------------
+
+
+def _repeated_mech(
+    p: float, detectors: frozenset[int] = frozenset(), labels=("D0",)
+) -> ErrorMechanism:
+    return ErrorMechanism(
+        probability=p,
+        detectors=detectors,
+        observables=frozenset(),
+        repeated_targets=tuple(labels),
+    )
+
+
+def test_repeated_target_alone_fails() -> None:
+    model = _model(_repeated_mech(0.1, frozenset({1})))
+    result = assert_failed(check_duplicates(model))
+    assert result.severity == "warning"
+    assert "repeats D0" in result.counter_example
+    assert result.counter_example_data["mechanism_count"] == 1
+
+
+def test_repeated_observable_target_alone_fails() -> None:
+    model = _model(_repeated_mech(0.1, frozenset(), ("L0",)))
+    result = assert_failed(check_duplicates(model))
+    assert "repeats L0" in result.counter_example
+
+
+def test_repeated_target_and_signature_duplicates_report_both() -> None:
+    model = _model(
+        _mech(0.1, frozenset({0})),
+        _mech(0.2, frozenset({0})),
+        _repeated_mech(0.3, frozenset({2})),
+    )
+    result = assert_failed(check_duplicates(model))
+    assert "duplicate mechanism signature" in result.message
+    assert "repeat a target" in result.message
+    assert "repeats D0" in result.counter_example
+    assert result.counter_example_data["repeated_target_mechanisms"] == [
+        "error(0.3) repeats D0"
+    ]
+
+
+def test_no_repeated_targets_passes() -> None:
+    result = check_duplicates(_model(_mech(0.1, frozenset({0}))))
+    assert result.passed
+    assert result.counter_example is None
+
+
+def test_repeated_target_in_zero_count_repeat_is_ignored() -> None:
+    dead_mechanism = ErrorMechanism(
+        0.1,
+        frozenset(),
+        frozenset(),
+        repeated_targets=("D0",),
+    )
+    model = ErrorModel(
+        detectors=set(),
+        observables=set(),
+        error_mechanisms=[RepeatBlock((dead_mechanism,), count=0)],
+    )
+    assert check_duplicates(model).passed
+>>>>>>> 5972866 (Release v0.2.4)

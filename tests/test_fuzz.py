@@ -115,8 +115,9 @@ def test_all_checks_never_crash_on_random_tree(model: ErrorModel) -> None:
     for name, fn in ALL_CHECKS.items():
         result = fn(model)
         assert result.name == name
-        if not result.passed:
-            # Failing results must carry actionable counter-examples.
+        if not result.passed and result.status == "verdict":
+            # Failing verdicts must carry actionable counter-examples. Skips are
+            # non-verdicts (exit-neutral) and explain themselves in `message`.
             assert result.counter_example is not None
             assert result.counter_example_data is not None
 

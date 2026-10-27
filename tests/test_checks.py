@@ -27,6 +27,10 @@ def test_registered_check_satisfies_result_contract(
 ) -> None:
     result = check_fn(ErrorModel(set(), set(), []))
     assert result.severity in {"error", "warning"}
+    if result.status != "verdict":
+        # A skip is exit-neutral and explains itself in `message`; the
+        # counter-example contract applies to failing verdicts only.
+        return
     if result.passed:
         assert result.counter_example is None
         assert result.counter_example_data is None
@@ -46,8 +50,12 @@ def test_registered_check_reports_counterexamples_on_failure(
         "detectability": ErrorModel(
             set(), {0}, [ErrorMechanism(0.1, frozenset(), frozenset({0}))]
         ),
-        "sensitivity": ErrorModel({0}, set(), []),
-        "observable_coverage": ErrorModel(set(), {0}, []),
+        "sensitivity": ErrorModel(
+            {0}, set(), [ErrorMechanism(0.1, frozenset(), frozenset({1}))]
+        ),
+        "observable_coverage": ErrorModel(
+            set(), {0}, [ErrorMechanism(0.1, frozenset({1}), frozenset())]
+        ),
         "probability_bounds": ErrorModel(
             set(), set(), [ErrorMechanism(0.0, frozenset(), frozenset())]
         ),
@@ -72,6 +80,31 @@ def test_registered_check_reports_counterexamples_on_failure(
             set(),
             [ErrorMechanism(0.1, frozenset(), frozenset())],
         ),
+<<<<<<< HEAD
+=======
+        "high_probability_mechanisms": ErrorModel(
+            set(),
+            set(),
+            [ErrorMechanism(0.4, frozenset({0}), frozenset())],
+        ),
+        "connectivity": ErrorModel(
+            {0, 1},
+            {0},
+            [
+                ErrorMechanism(0.1, frozenset({0}), frozenset()),
+                ErrorMechanism(0.1, frozenset({1}), frozenset({0})),
+            ],
+        ),
+        "boundary_symmetry": ErrorModel(
+            {0},
+            {0, 1},
+            [
+                ErrorMechanism(0.1, frozenset(), frozenset({0})),
+                ErrorMechanism(0.1, frozenset({0}), frozenset()),
+                ErrorMechanism(0.1, frozenset({0}), frozenset({1})),
+            ],
+        ),
+>>>>>>> 5972866 (Release v0.2.4)
     }
     result = check_fn(cases[name])
     assert not result.passed
@@ -92,8 +125,12 @@ def test_registered_check_hint_contract(name: str, check_fn: Callable) -> None:
         "detectability": ErrorModel(
             set(), {0}, [ErrorMechanism(0.1, frozenset(), frozenset({0}))]
         ),
-        "sensitivity": ErrorModel({0}, set(), []),
-        "observable_coverage": ErrorModel(set(), {0}, []),
+        "sensitivity": ErrorModel(
+            {0}, set(), [ErrorMechanism(0.1, frozenset(), frozenset({1}))]
+        ),
+        "observable_coverage": ErrorModel(
+            set(), {0}, [ErrorMechanism(0.1, frozenset({1}), frozenset())]
+        ),
         "probability_bounds": ErrorModel(
             set(), set(), [ErrorMechanism(0.0, frozenset(), frozenset())]
         ),
@@ -118,6 +155,31 @@ def test_registered_check_hint_contract(name: str, check_fn: Callable) -> None:
             set(),
             [ErrorMechanism(0.1, frozenset(), frozenset())],
         ),
+<<<<<<< HEAD
+=======
+        "high_probability_mechanisms": ErrorModel(
+            set(),
+            set(),
+            [ErrorMechanism(0.4, frozenset({0}), frozenset())],
+        ),
+        "connectivity": ErrorModel(
+            {0, 1},
+            {0},
+            [
+                ErrorMechanism(0.1, frozenset({0}), frozenset()),
+                ErrorMechanism(0.1, frozenset({1}), frozenset({0})),
+            ],
+        ),
+        "boundary_symmetry": ErrorModel(
+            {0},
+            {0, 1},
+            [
+                ErrorMechanism(0.1, frozenset(), frozenset({0})),
+                ErrorMechanism(0.1, frozenset({0}), frozenset()),
+                ErrorMechanism(0.1, frozenset({0}), frozenset({1})),
+            ],
+        ),
+>>>>>>> 5972866 (Release v0.2.4)
     }
     result = check_fn(cases[name])
     assert not result.passed
@@ -141,7 +203,16 @@ def test_validate_check_signature(check_fn: Callable) -> None:
     params = list(sig.parameters.values())
     assert params[0].name == "model"
     assert len(params) == 2
+<<<<<<< HEAD
     assert params[1].name == "max_shown"
+=======
+    assert params[1].name in {
+        "max_shown",
+        "threshold",
+        "single_decoding_graph",
+        "max_imbalance",
+    }
+>>>>>>> 5972866 (Release v0.2.4)
 
 
 # ---------------------------------------------------------------------------

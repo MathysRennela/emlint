@@ -1,7 +1,8 @@
 """Tests for check_probability_bounds and its _prob_label helper.
 
-Valid range is the open-closed interval (0, 0.5].
-Out-of-range cases: p ≤ 0, p > 0.5, NaN.
+After the severity split, probability_bounds flags only unphysical
+probabilities: p <= 0, NaN, and +/-inf. Probabilities with 0.5 < p are handled
+by the separate warning-only check high_probability_mechanisms.
 """
 
 from __future__ import annotations
@@ -74,14 +75,15 @@ def test_p_zero_fails():
     assert not result.passed
 
 
-def test_p_just_above_half_fails():
+def test_p_just_above_half_passes():
+    # After the split, p in (0.5, 1] is not an error for probability_bounds.
     result = check_probability_bounds(_model(_mech(0.5 + 1e-10)))
-    assert not result.passed
+    assert result.passed
 
 
-def test_p_one_fails():
+def test_p_one_passes():
     result = check_probability_bounds(_model(_mech(1.0)))
-    assert not result.passed
+    assert result.passed
 
 
 def test_p_negative_fails():
@@ -90,7 +92,7 @@ def test_p_negative_fails():
 
 
 def test_p_high_fails():
-    result = check_probability_bounds(_model(_mech(0.9)))
+    result = check_probability_bounds(_model(_mech(-0.1)))
     assert not result.passed
 
 
@@ -114,11 +116,11 @@ def test_p_neg_inf_fails():
 # ---------------------------------------------------------------------------
 
 
-def test_p_above_half_has_warning_severity():
-    """p > 0.5 is anomalous but not unphysical — must be warning, not error."""
-    result = check_probability_bounds(_model(_mech(0.9)))
-    assert not result.passed
-    assert result.severity == "warning"
+def test_p_above_half_passes_probability_bounds():
+    """p > 0.5 is no longer flagged by probability_bounds after the split."""
+    result = check_probability_bounds(_model(_mech(0.6)))
+    assert result.passed
+    assert result.severity == "error"
 
 
 def test_p_zero_has_error_severity():
@@ -147,7 +149,7 @@ def test_p_inf_has_error_severity():
 
 def test_mixed_unphysical_and_above_half_has_error_severity():
     """If NaN and > 0.5 violations co-exist, severity must be error (not warning)."""
-    mechs = [_mech(float("nan")), _mech(0.9)]
+    mechs = [_mech(float("nan")), _mech(-0.1)]
     result = check_probability_bounds(_model(*mechs))
     assert not result.passed
     assert result.severity == "error"
@@ -165,9 +167,9 @@ def test_counter_example_not_none_on_failure():
 
 def test_counter_example_contains_probability_value():
     """The counter-example string must include the offending probability."""
-    result = check_probability_bounds(_model(_mech(0.9)))
+    result = check_probability_bounds(_model(_mech(-0.1)))
     assert result.counter_example is not None
-    assert "0.9" in result.counter_example
+    assert "-0.1" in result.counter_example
 
 
 def test_counter_example_includes_detector_indices():
@@ -189,21 +191,20 @@ def test_mixed_violations_all_tags_in_message():
         _mech(float("nan")),  # NaN
         _mech(-0.1),  # negative
         _mech(0.0),  # zero
-        _mech(0.9),  # > 0.5
+        _mech(-0.1),  # > 0.5
     ]
     result = check_probability_bounds(_model(*mechs))
     assert not result.passed
     assert "p = NaN" in result.message
     assert "p < 0" in result.message
     assert "p = 0" in result.message
-    assert "p > 0.5" in result.message
 
 
 def test_mixed_valid_and_invalid_counts_only_violations():
-    mechs = [_mech(0.1), _mech(0.0), _mech(0.5), _mech(0.9)]
+    mechs = [_mech(0.1), _mech(0.0), _mech(0.5), _mech(-0.1)]
     result = check_probability_bounds(_model(*mechs))
     assert not result.passed
-    # 2 violations: p=0 and p=0.9
+    # 2 violations: p=0 and p=-0.1
     assert "Found 2 error mechanism instance(s)" in result.message
 
 
@@ -225,12 +226,16 @@ def test_p_at_most_zero_always_fails(p):
     assert not result.passed
 
 
-@given(st.floats(min_value=0.5 + 1e-10, allow_nan=False, allow_infinity=False))
-def test_p_above_half_always_fails(p):
-    """p > 0.5 must always fail."""
-    assume(p > 0.5)  # guard against floating-point edge that equals 0.5
+@given(
+    st.floats(
+        min_value=0.5 + 1e-10, max_value=1.0, allow_nan=False, allow_infinity=False
+    )
+)
+def test_p_above_half_passes_probability_bounds(p):
+    """After the split, p > 0.5 passes probability_bounds."""
+    assume(p > 0.5)
     result = check_probability_bounds(_model(_mech(p)))
-    assert not result.passed
+    assert result.passed
 
 
 # ---------------------------------------------------------------------------
@@ -255,21 +260,21 @@ def test_counter_example_data_has_mechanisms_key():
 
 
 def test_counter_example_data_mechanisms_is_list():
-    result = assert_failed(check_probability_bounds(_model(_mech(0.9))))
+    result = assert_failed(check_probability_bounds(_model(_mech(-0.1))))
     assert isinstance(result.counter_example_data["mechanisms"], list)
 
 
 def test_counter_example_data_mechanism_string_contains_probability():
     result = assert_failed(
-        check_probability_bounds(_model(_mech(0.9, detectors=frozenset({2}))))
+        check_probability_bounds(_model(_mech(-0.1, detectors=frozenset({2}))))
     )
     mechs = result.counter_example_data["mechanisms"]
-    assert any("0.9" in s and "D2" in s for s in mechs)
+    assert any("-0.1" in s and "D2" in s for s in mechs)
 
 
 def test_counter_example_data_contains_all_violations():
     m0 = _mech(0.0, detectors=frozenset({0}))
-    m1 = _mech(0.9, detectors=frozenset({1}))
+    m1 = _mech(-0.1, detectors=frozenset({1}))
     result = assert_failed(check_probability_bounds(_model(m0, m1)))
     mechs = result.counter_example_data["mechanisms"]
     assert len(mechs) == 2
@@ -286,7 +291,7 @@ def test_instance_count_scales_with_repeat_multiplicity():
     """
     from emlint.model import RepeatBlock
 
-    body = (_mech(0.7, detectors=frozenset({0})),)
+    body = (_mech(0.0, detectors=frozenset({0})),)
     block = RepeatBlock(
         body=body, count=4, detector_offset_per_iteration=1, absolute_start_offset=0
     )
@@ -306,10 +311,10 @@ def test_instance_count_scales_with_repeat_multiplicity():
 def test_truncation_message_when_many_violations():
     """More than _MAX_SHOWN violations should mention the overflow count."""
     n = _MAX_SHOWN + 2
-    mechs = [_mech(0.9, detectors=frozenset({i})) for i in range(n)]
+    mechs = [_mech(-0.1, detectors=frozenset({i})) for i in range(n)]
     result = assert_failed(check_probability_bounds(_model(*mechs)))
     assert not result.passed
-    assert result.severity == "warning"
+    assert result.severity == "error"
     assert "more" in result.counter_example
     # All violations are still present in the structured data.
     assert len(result.counter_example_data["mechanisms"]) == n
@@ -321,7 +326,7 @@ def test_truncation_boundary_exactly_max_shown_has_no_overflow():
     Guards the off-by-one at the truncation boundary (mutant: `<` → `<=`).
     """
     n = _MAX_SHOWN
-    mechs = [_mech(0.9, detectors=frozenset({i})) for i in range(n)]
+    mechs = [_mech(-0.1, detectors=frozenset({i})) for i in range(n)]
     result = assert_failed(check_probability_bounds(_model(*mechs)))
     assert not result.passed
     assert "more" not in result.counter_example
@@ -337,8 +342,8 @@ def test_tag_counts_aggregate_across_repeat_instances():
     from emlint.model import RepeatBlock
 
     body = (
-        _mech(0.9, detectors=frozenset({0})),
-        _mech(0.8, detectors=frozenset({1})),
+        _mech(-0.1, detectors=frozenset({0})),
+        _mech(-0.2, detectors=frozenset({1})),
     )
     block = RepeatBlock(
         body=body, count=3, detector_offset_per_iteration=2, absolute_start_offset=0
@@ -385,7 +390,11 @@ def test_valid_probability_from_stim_dem_passes():
 def test_probability_bounds_truncation_boundary_exactly_max_shown():
     """Exactly _MAX_SHOWN violating mechanisms must render all of them.
     (Catches the `len(lines)<max_shown`→`<=` mutant.)"""
+<<<<<<< HEAD
     mechs = [_mech(0.9, frozenset({i})) for i in range(_MAX_SHOWN)]
+=======
+    mechs = [_mech(-0.1, frozenset({i})) for i in range(_MAX_SHOWN)]
+>>>>>>> 5972866 (Release v0.2.4)
     result = assert_failed(check_probability_bounds(_model(*mechs)))
     assert "more" not in result.counter_example
     assert f"D{_MAX_SHOWN - 1}" in result.counter_example

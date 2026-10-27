@@ -144,8 +144,14 @@ def test_nested_normalization_matches_flattened_oracle() -> None:
 @pytest.mark.parametrize("stride,count", [(2, 4), (-2, 4), (0, 4), (2, 0), (2, 1)])
 def test_sensitivity_edges_match_flattened_oracle(stride: int, count: int) -> None:
     model = _repeat_model(count=count, stride=stride)
-    participating = {d for mech in model.flattened() for d in mech.detectors}
     result = check_sensitivity(model)
+    if count == 0:
+        # A zero-count repeat contributes no mechanism: the model is vacuous,
+        # so the sensitivity predicate cannot separate dead detectors from an
+        # empty audit and the check skips.
+        assert result.status == "skipped"
+        return
+    participating = {d for mech in model.flattened() for d in mech.detectors}
     dead = set(assert_failed(result).counter_example_data["detectors"])
     assert dead == model.detectors - participating
 
@@ -337,7 +343,7 @@ def test_valid_negative_shift_with_nonnegative_ids_is_accepted() -> None:
 
 
 def test_depth_three_normalization_matches_flat_oracle() -> None:
-    leaf = ErrorMechanism(0.6, frozenset({1}), frozenset({0}))
+    leaf = ErrorMechanism(0.0, frozenset({1}), frozenset({0}))
     zero = RepeatBlock((leaf,), 0, 7, 2)
     inner = RepeatBlock((zero, leaf), 2, -2, 4)
     middle = RepeatBlock((inner,), 2, 3, 5)
@@ -395,7 +401,7 @@ def test_all_optimized_checks_use_the_same_flattened_oracle_contract() -> None:
             RepeatBlock(
                 (
                     ErrorMechanism(0.0, frozenset(), frozenset({0})),
-                    ErrorMechanism(0.6, frozenset({1}), frozenset({1})),
+                    ErrorMechanism(0.0, frozenset({1}), frozenset({1})),
                 ),
                 2,
                 2,
@@ -418,7 +424,7 @@ def test_nested_template_data_matches_flattened_oracle() -> None:
         (
             ErrorMechanism(0.1, frozenset(), frozenset({0})),
             ErrorMechanism(float("nan"), frozenset({1}), frozenset()),
-            ErrorMechanism(0.6, frozenset({2}), frozenset()),
+            ErrorMechanism(0.0, frozenset({2}), frozenset()),
         ),
         2,
         3,
@@ -437,7 +443,7 @@ def test_nested_template_data_matches_flattened_oracle() -> None:
 
 def test_nested_checks_match_flattened_oracle() -> None:
     inner = RepeatBlock(
-        (ErrorMechanism(0.6, frozenset({1}), frozenset({0})),),
+        (ErrorMechanism(0.0, frozenset({1}), frozenset({0})),),
         2,
         -1,
         4,
@@ -526,7 +532,6 @@ def test_sensitivity_preserves_gaps_between_same_residue_intervals() -> None:
         (float("-inf"), "error"),
         (-0.1, "error"),
         (0.0, "error"),
-        (0.6, "warning"),
     ],
 )
 def test_repeat_probability_matrix_has_dynamic_severity(
@@ -555,7 +560,7 @@ def test_repeat_probability_severity_and_absolute_witnesses() -> None:
             RepeatBlock(
                 (
                     ErrorMechanism(float("nan"), frozenset({0}), frozenset()),
-                    ErrorMechanism(0.9, frozenset({1}), frozenset()),
+                    ErrorMechanism(-0.1, frozenset({1}), frozenset()),
                 ),
                 3,
                 1,
@@ -623,6 +628,8 @@ def test_repeat_created_duplicate_signature_is_detected() -> None:
 
 
 def test_probability_severity_is_preserved() -> None:
+    # After the split, p > 0.5 no longer fails probability_bounds; only
+    # unphysical probabilities do, always at error severity.
     warning = ErrorModel(
         {0},
         set(),
@@ -633,7 +640,9 @@ def test_probability_severity_is_preserved() -> None:
         set(),
         [ErrorMechanism(0.0, frozenset({0}), frozenset())],
     )
-    assert check_probability_bounds(warning).severity == "warning"
+    assert check_probability_bounds(warning).passed
+    assert check_probability_bounds(warning).severity == "error"
+    assert not check_probability_bounds(error).passed
     assert check_probability_bounds(error).severity == "error"
 
 
@@ -648,6 +657,9 @@ def test_probability_severity_is_preserved() -> None:
 def test_generated_sensitivity_matches_flattened(detectors, count, stride) -> None:
     body = (ErrorMechanism(0.1, detectors, frozenset()),)
     model = ErrorModel(set(range(20)), set(), [RepeatBlock(body, count, stride, 20)])
+    if count == 0:
+        assert check_sensitivity(model).status == "skipped"
+        return
     participating = {d for mech in model.flattened() for d in mech.detectors}
     result = check_sensitivity(model)
     dead = set(assert_failed(result).counter_example_data["detectors"])
@@ -718,7 +730,7 @@ def test_no_repeat_dispatch_matches_direct_flat_checks() -> None:
 def test_no_repeat_dispatch_matches_each_direct_flat_check() -> None:
     source = """\
 error(0.0) D0
-error(0.6) D1
+error(0.0) D1
 error(0.1) L0
 detector D0
 detector D1
@@ -767,7 +779,9 @@ def test_no_repeat_cross_scope_checks_use_one_unchecked_flatten(monkeypatch) -> 
 
     monkeypatch.setattr(ErrorModel, "flattened", counted)
     emlint.check("error(0.1) D0 L0\ndetector D0\n")
-    assert calls == 0
+    # `connectivity` (global) calls flattened once; the scope-local and
+    # cross-scope checks remain flatten-free on a repeat-free model.
+    assert calls == 1
 
 
 def test_dispatcher_uses_one_flatten_and_isolates_custom_checks() -> None:
@@ -820,9 +834,10 @@ def test_dispatcher_flatten_counts_by_check_subset() -> None:
         ):
             before = calls
             emlint.check(source, checks=checks)
-            # Small repeat models use the bounded flat path without
-            # re-entering the validating flattened() wrapper.
-            assert calls - before == 0
+            # Scope-local and cross-scope checks stay flatten-free; the promoted
+            # global `connectivity` check flattens once on the full battery.
+            expected = 1 if checks is emlint.ALL_CHECKS else 0
+            assert calls - before == expected
     finally:
         setattr(ErrorModel, "flattened", original)
 

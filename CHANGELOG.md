@@ -3,6 +3,59 @@
 User-visible changes to emlint. 
 Versions follow [Semantic Versioning](https://semver.org/).
 
+<<<<<<< HEAD
+=======
+## [0.2.4] — 2026-10-27
+
+Maintainer-owned experimental checks and promotion wave. Ships the promotion of
+`connectivity` and `boundary_symmetry` to production, plus `high_probability_mechanisms`
+(promoted in the same cycle), and the `LOCAL_CHECKS` / `GLOBAL_CHECKS` registry split.
+
+### Added
+
+- `duplicates` also reports mechanisms that repeat a target inside one
+  instruction (`error(p) D0 D0`), preserving the target multiplicity that the
+  parity fold discards. DEM readers disagree on that shape (cancel, self-loop,
+  or rejection), so the finding is a portability warning.
+- Experimental `coordinate_dimension_consistency` (advisory): declared detector
+  coordinates that use different widths.
+- Experimental `distance` reports per-observable minima in
+  `counter_example_data["per_observable"]`, so a weakly protected logical is
+  visible behind the model-wide minimum.
+- Production check `connectivity` (global): detector-mechanism Tanner graph
+  connected-component count. Profile-scoped severity: `error` for a declared
+  single-decoding-graph profile (`strict-dem`), `warning` otherwise, `skipped`
+  for explicitly decomposed/multi-component models.
+- Production check `boundary_symmetry` (global, warning): per-observable distance
+  lower-bound balance.
+- Production check `high_probability_mechanisms` (warning): flags mechanisms
+  whose probability exceeds a configurable threshold (default 0.3).
+- `LOCAL_CHECKS` / `GLOBAL_CHECKS` dictionaries in `emlint/checks.py`;
+  `ALL_CHECKS` is their union.
+- Corpus applicability metadata for every clean corpus DEM.
+- Repeat-aware oracle tests for the promoted global checks.
+- Experimental corpus smoke test.
+
+### Changed
+
+- Enhanced `duplicates` reports fused probability per group; no separate
+  `error` gate because `p_eff > 0.5` requires a contributing `p > 0.5`,
+  already flagged by `probability_bounds`.
+- Reports retain the selected profile (carried from v0.2.3).
+- `emlint/checks.py` gained the graph helpers needed by the promoted global
+  checks.
+- Zero-count repeat bodies no longer produce repeated-target findings. Local repeat traversal now shifts decomposition-hint detector IDs with the mechanism.
+- Python 3.10 installations include the `tomli` fallback dependency required by the CLI configuration loader.
+- `sensitivity` and `observable_coverage` report a DEM with no error mechanisms as `skipped` instead of failing each declared detector/observable. 
+
+### Known limitations
+
+- `bounded_multifault_detectability` and `undetectable_combination_ambiguity`
+  remain experimental (bounded search, warning severity).
+- `distance` remains experimental (no sound per-mechanism hyperedge bound yet).
+- Bounded checks are O(n^k); large DEMs require a small `max_weight`.
+
+>>>>>>> 5972866 (Release v0.2.4)
 ## [0.2.3] — 2026-10-21
 
 Hardening release for existing checks and report/CLI behavior, plus the
@@ -149,6 +202,10 @@ Initial release with six production checks:
 The CLI supports text/JSON output, check selection, severity filtering, and
 exit codes `0` (pass), `1` (error), and `2` (warnings only).
 
+<<<<<<< HEAD
+=======
+[0.2.4]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.4
+>>>>>>> 5972866 (Release v0.2.4)
 [0.2.3]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.3
 [0.2.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.2
 [0.2.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.1

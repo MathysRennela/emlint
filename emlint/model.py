@@ -37,6 +37,24 @@ def _validate_progression_ids(
         _validate_shifted_ids(values, start + (count - 1) * stride, label)
 
 
+def _shift_target_label(label: str, offset: int) -> str:
+    """Shift a ``"D<n>"`` target label by *offset*; leave ``"L<n>"`` labels alone."""
+    if offset and label.startswith("D"):
+        return f"D{int(label[1:]) + offset}"
+    return label
+
+
+def _validate_target_label(label: str, path: str) -> None:
+    """Require a repeated-target label to be a canonical DEM target identifier."""
+    if (
+        len(label) < 2
+        or label[0] not in "DL"
+        or not label[1:].isascii()
+        or not label[1:].isdigit()
+    ):
+        raise ValueError(f"{path} must be a D<n> or L<n> target label")
+
+
 @dataclass(frozen=True)
 class ErrorMechanism:
     """A single error mechanism, e.g. "X error on qubit 3 with probability 0.01"."""
@@ -49,6 +67,18 @@ class ErrorMechanism:
     # the instruction carried no separator targets. Component detector IDs are
     # stored with the same scoping as `detectors` (relative inside repeat bodies).
     decomposition_hints: tuple[tuple[frozenset[int], frozenset[int]], ...] = ()
+    # Target labels that appeared more than once in this instruction's raw target
+    # list, e.g. ("D0", "L1") for "error(0.1) D0 D0 D1 L1 L1". The XOR fold has
+    # already cancelled the repetition in `detectors`/`observables`; this field
+    # preserves the fact that the DEM text repeated a target, which readers
+    # disagree about (parity cancellation vs self-loop vs kept twice). Detector
+    # labels are stored with the same scoping as `detectors` (relative inside
+    # repeat bodies).
+    repeated_targets: tuple[str, ...] = ()
+    # Raw detector-target counts per instruction component. Unlike `detectors`
+    # and `decomposition_hints`, these counts do not parity-fold repetitions.
+    # Empty for hand-built mechanisms that do not carry source target metadata.
+    component_detector_target_counts: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,6 +143,36 @@ class ErrorModel:
                 for ci, (cdets, cobs) in enumerate(item.decomposition_hints):
                     _validate_ids(cdets, f"{path} decomposition_hints[{ci}] detector")
                     _validate_ids(cobs, f"{path} decomposition_hints[{ci}] observable")
+                if not isinstance(item.repeated_targets, tuple):
+                    raise TypeError(f"{path} repeated_targets must be a tuple")
+                for ri, label in enumerate(item.repeated_targets):
+                    if not isinstance(label, str):
+                        raise TypeError(
+                            f"{path} repeated_targets[{ri}] must be a string"
+                        )
+                    _validate_target_label(label, f"{path} repeated_targets[{ri}]")
+                if not isinstance(item.component_detector_target_counts, tuple):
+                    raise TypeError(
+                        f"{path} component_detector_target_counts must be a tuple"
+                    )
+                for ci, count in enumerate(item.component_detector_target_counts):
+                    _validate_exact_int(
+                        count, f"{path} component_detector_target_counts[{ci}]"
+                    )
+                    if count < 0:
+                        raise ValueError(
+                            f"{path} component_detector_target_counts[{ci}] "
+                            "must be non-negative"
+                        )
+                expected_count = len(item.decomposition_hints) or 1
+                if (
+                    item.component_detector_target_counts
+                    and len(item.component_detector_target_counts) != expected_count
+                ):
+                    raise ValueError(
+                        f"{path} component_detector_target_counts must have "
+                        f"{expected_count} entries"
+                    )
                 return
             if not isinstance(item, RepeatBlock):
                 raise TypeError(f"{path} must be an ErrorMechanism or RepeatBlock")
@@ -188,6 +248,13 @@ class ErrorModel:
                                     cobs,
                                 )
                                 for cdets, cobs in item.decomposition_hints
+                            ),
+                            repeated_targets=tuple(
+                                _shift_target_label(label, scope_offset)
+                                for label in item.repeated_targets
+                            ),
+                            component_detector_target_counts=(
+                                item.component_detector_target_counts
                             ),
                         )
                 elif isinstance(item, RepeatBlock):

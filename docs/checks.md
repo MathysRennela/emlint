@@ -1,6 +1,10 @@
 # Check catalog
 
+<<<<<<< HEAD
 This page describes the seven production checks in emlint v0.2. Each check
+=======
+This page describes the production checks in emlint v0.2. Each check
+>>>>>>> 5972866 (Release v0.2.4)
 returns a `PropertyResult` with a pass/fail status, severity, message, and (on
 failure) a counter-example.
 
@@ -15,6 +19,12 @@ failure) a counter-example.
 | `duplicates` | Cross-mechanism relation | Repeated detector/observable signatures | warning | Exact shared flattening; repetition can create collisions |
 | `correctability` | Cross-mechanism relation | Syndrome-to-observable ambiguity | warning | Exact shared flattening; repetition can create conflicts |
 | `null_mechanism` | Per mechanism | Error mechanism with empty detector and observable support | warning | Template-local; repetition preserves emptiness |
+<<<<<<< HEAD
+=======
+| `high_probability_mechanisms` | Per mechanism | Mechanism probability above threshold (default 0.3) | warning | Template-local; probabilities are not shifted |
+| `connectivity` | Global graph | Disconnected detector-mechanism Tanner graph components | error or warning (profile-scoped) | Uses flattened model; repeat expansion is global |
+| `boundary_symmetry` | Global graph | Imbalanced per-observable distance lower bounds | warning | Uses flattened model; repeat expansion is global |
+>>>>>>> 5972866 (Release v0.2.4)
 
 ## Report disclosures
 
@@ -50,13 +60,18 @@ This is an error-severity finding.
 
 Flags declared detectors that no mechanism ever triggers. This can indicate a
 missing fault model or a detector wiring problem. It is warning-level because a
-model may intentionally omit some physically impossible fault paths.
+model may intentionally omit some physically impossible fault paths, and because
+a detector with a constant outcome has no mechanism in the DEM either — the two
+cases are indistinguishable from DEM text. A DEM with no mechanisms at all is
+reported as `skipped`; the report discloses it as vacuous.
 
 ### `observable_coverage`
 
 Flags declared observables that never appear in any mechanism. This commonly
 indicates a missing or miswired logical observable. It is an error-severity
-finding.
+finding. A DEM with no mechanisms at all is reported as `skipped` rather than as
+one error per observable: noiseless reference artifacts keep their observables
+declared, and the report already discloses the model as vacuous.
 
 ### `probability_bounds`
 
@@ -101,6 +116,22 @@ does not already carry. The check is therefore template-local, and a repeat
 body is reported as one witness per template plus an `instance_count` rather
 than as one entry per expanded iteration.
 
+<<<<<<< HEAD
+=======
+### `connectivity`
+
+Verifies that the detector-mechanism Tanner graph forms a single connected
+component. A disconnected graph means some detectors can never contribute to
+correcting a logical error. Severity is profile-scoped: `error` for a declared
+single-decoding-graph profile, `warning` otherwise, and `skipped` for explicitly
+decomposed or multi-component models.
+
+### `boundary_symmetry`
+
+Checks that per-observable distance lower bounds are balanced. Requires at
+least two logical observables; skipped otherwise. Warning severity.
+
+>>>>>>> 5972866 (Release v0.2.4)
 ## Repeat-aware evaluation boundaries
 
 The production checks do not all admit the same repeat optimization:

@@ -199,7 +199,7 @@ def test_det_label_with_coords_appears_in_sensitivity_counter_example():
     model = ErrorModel(
         detectors={0},
         observables=set(),
-        error_mechanisms=[],
+        error_mechanisms=[ErrorMechanism(0.1, frozenset({5}), frozenset())],
         detector_coords={0: (1.0, 2.0)},
     )
     result = assert_failed(check_sensitivity(model))
@@ -540,3 +540,57 @@ def test_shift_detectors_between_repeat_blocks():
     assert flat[1].detectors == frozenset({1})
     assert flat[2].detectors == frozenset({2})
     assert flat[3].detectors == frozenset({3})
+
+
+# ---------------------------------------------------------------------------
+# Repeated targets
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_targets_are_recorded_before_xor_folding() -> None:
+    dem = stim.DetectorErrorModel(
+        "error(0.1) D2 D2 D3 L0 L0\n"
+        "detector D2\n"
+        "detector D3\n"
+        "logical_observable L0\n"
+    )
+    mechanism = from_stim_dem(dem).flattened()[0]
+    assert mechanism.detectors == frozenset({3})
+    assert mechanism.observables == frozenset()
+    assert mechanism.repeated_targets == ("D2", "L0")
+    assert mechanism.component_detector_target_counts == (3,)
+
+
+def test_component_detector_target_counts_preserve_separator_components() -> None:
+    dem = stim.DetectorErrorModel("error(0.1) D0 D0 D1 ^ D2 D3 L0")
+    mechanism = from_stim_dem(dem).flattened()[0]
+    assert mechanism.component_detector_target_counts == (3, 2)
+
+
+def test_single_targets_are_not_recorded_as_repeated() -> None:
+    dem = stim.DetectorErrorModel("error(0.1) D0 D1\n" "detector D0\n" "detector D1\n")
+    assert from_stim_dem(dem).flattened()[0].repeated_targets == ()
+
+
+def test_repeated_target_labels_shift_across_repeat_iterations() -> None:
+    dem = stim.DetectorErrorModel(
+        "repeat 2 {\n"
+        "  error(0.1) D0 D0\n"
+        "  shift_detectors 1\n"
+        "}\n"
+        "detector D0\n"
+        "detector D1\n"
+    )
+    first, second = from_stim_dem(dem).flattened()
+    assert first.repeated_targets == ("D0",)
+    assert second.repeated_targets == ("D1",)
+
+
+def test_repeated_target_records_do_not_change_the_signature() -> None:
+    with_repeat = stim.DetectorErrorModel(
+        "error(0.1) D1 D1 D2\ndetector D1\ndetector D2\n"
+    )
+    without = stim.DetectorErrorModel("error(0.1) D2\ndetector D1\ndetector D2\n")
+    a = from_stim_dem(with_repeat).flattened()[0]
+    b = from_stim_dem(without).flattened()[0]
+    assert (a.detectors, a.observables) == (b.detectors, b.observables)

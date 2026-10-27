@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emlint"
+<<<<<<< HEAD
 version = "0.2.3"
+=======
+version = "0.2.4"
+>>>>>>> 5972866 (Release v0.2.4)
 description = "A static analysis tool for quantum error correction"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +39,7 @@ classifiers = [
 ]
 dependencies = [
     "stim >= 1.14",
+    "tomli >= 2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +52,7 @@ testpaths = ["tests"]
 pythonpath = ["tests"]
 
 [tool.ty.src]
-exclude = ["experimental/**", "examples/**", "papers/**", "notes/**"]
+exclude = ["experimental/**", "examples/**", "papers/**", "notes/**", "benchmarks/**", "tools/**", "tests/**", "demos/**", "presentations/**", "mutants/**"]
 
 [tool.black]
 line-length = 88

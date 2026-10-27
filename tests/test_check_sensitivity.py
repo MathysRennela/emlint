@@ -23,13 +23,16 @@ from helpers import _mech, _model, assert_failed
 # ---------------------------------------------------------------------------
 
 
-def test_empty_model_passes():
-    model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=[])
+def test_vacuous_model_is_skipped():
+    # No mechanisms means every declared detector is trivially un-triggered;
+    # the predicate cannot separate a dead detector from an empty audit.
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
     result = check_sensitivity(model)
-    assert result.passed
-    assert result.name == "sensitivity"
+    assert not result.passed
+    assert result.status == "skipped"
     assert result.severity == "warning"
     assert result.counter_example is None
+    assert "no error mechanisms" in result.message
 
 
 def test_single_mechanism_covers_its_detector():
@@ -77,37 +80,41 @@ def test_passing_result_has_no_counter_example():
 
 
 def test_single_dead_detector_fails():
-    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[_mech(0.1)])
     result = check_sensitivity(model)
     assert not result.passed
     assert result.severity == "warning"
 
 
 def test_multiple_dead_detectors_fail():
-    model = ErrorModel(detectors={0, 1, 2}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(
+        detectors={0, 1, 2}, observables=set(), error_mechanisms=[_mech(0.1)]
+    )
     result = check_sensitivity(model)
     assert not result.passed
 
 
 def test_result_name_on_failure():
-    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[_mech(0.1)])
     result = check_sensitivity(model)
     assert result.name == "sensitivity"
 
 
 def test_counter_example_not_none_on_failure():
-    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[_mech(0.1)])
     assert_failed(check_sensitivity(model))
 
 
 def test_counter_example_contains_dead_detector_label():
-    model = ErrorModel(detectors={3}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={3}, observables=set(), error_mechanisms=[_mech(0.1)])
     result = assert_failed(check_sensitivity(model))
     assert "D3" in result.counter_example
 
 
 def test_message_contains_dead_count():
-    model = ErrorModel(detectors={0, 1}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(
+        detectors={0, 1}, observables=set(), error_mechanisms=[_mech(0.1)]
+    )
     result = check_sensitivity(model)
     assert "2 detector(s) are never triggered" in result.message
 
@@ -134,7 +141,9 @@ def test_only_uncovered_detectors_reported():
 def test_truncation_message_when_many_dead_detectors():
     """More than _MAX_SHOWN dead detectors should mention the overflow count."""
     n = _MAX_SHOWN + 3
-    model = ErrorModel(detectors=set(range(n)), observables=set(), error_mechanisms=[])
+    model = ErrorModel(
+        detectors=set(range(n)), observables=set(), error_mechanisms=[_mech(0.1)]
+    )
     result = assert_failed(check_sensitivity(model))
     assert not result.passed
     assert "more" in result.counter_example
@@ -181,18 +190,20 @@ def test_passing_result_has_no_counter_example_data():
 
 
 def test_failing_result_has_counter_example_data():
-    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[_mech(0.1)])
     assert_failed(check_sensitivity(model))
 
 
 def test_counter_example_data_has_detectors_key():
-    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={0}, observables=set(), error_mechanisms=[_mech(0.1)])
     result = assert_failed(check_sensitivity(model))
     assert "detectors" in result.counter_example_data
 
 
 def test_counter_example_data_detectors_is_list_of_ints():
-    model = ErrorModel(detectors={3, 7}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(
+        detectors={3, 7}, observables=set(), error_mechanisms=[_mech(0.1)]
+    )
     result = assert_failed(check_sensitivity(model))
     data = result.counter_example_data
     assert isinstance(data["detectors"], list)
@@ -200,7 +211,9 @@ def test_counter_example_data_detectors_is_list_of_ints():
 
 
 def test_counter_example_data_contains_all_dead_detectors():
-    model = ErrorModel(detectors={3, 7}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(
+        detectors={3, 7}, observables=set(), error_mechanisms=[_mech(0.1)]
+    )
     result = assert_failed(check_sensitivity(model))
     assert set(result.counter_example_data["detectors"]) == {3, 7}
 
@@ -222,7 +235,7 @@ def test_dead_detector_with_coordinates_uses_annotated_label():
     model = ErrorModel(
         detectors={17},
         observables=set(),
-        error_mechanisms=[],
+        error_mechanisms=[_mech(0.1)],
         detector_coords={17: (1.0, 0.0, 2.0)},
     )
     result = assert_failed(check_sensitivity(model))
@@ -232,7 +245,7 @@ def test_dead_detector_with_coordinates_uses_annotated_label():
 
 def test_dead_detector_without_coordinates_uses_plain_label():
     """When detector_coords is absent the counter-example must fall back to 'Dn' format."""
-    model = ErrorModel(detectors={17}, observables=set(), error_mechanisms=[])
+    model = ErrorModel(detectors={17}, observables=set(), error_mechanisms=[_mech(0.1)])
     result = assert_failed(check_sensitivity(model))
     assert not result.passed
     assert "D17" in result.counter_example
@@ -302,7 +315,9 @@ def test_interval_merge_boundary_is_inclusive():
     through a detector that lies strictly between two intervals of the same
     residue: {0, 2, 6, 8} leaves D4 dead and must be flagged.
     """
-    model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=[])
+    model = ErrorModel(
+        detectors=set(), observables=set(), error_mechanisms=[_mech(0.1)]
+    )
     from emlint.model import RepeatBlock
 
     body = (
@@ -385,7 +400,13 @@ def test_sensitivity_truncation_boundary_exactly_max_shown():
     """Exactly _MAX_SHOWN dead detectors must render all of them with no
     overflow note. (Catches the `> max_shown`→`>=` mutant.)"""
     dead = list(range(_MAX_SHOWN))
+<<<<<<< HEAD
     model = ErrorModel(detectors=set(dead), observables=set(), error_mechanisms=[])
+=======
+    model = ErrorModel(
+        detectors=set(dead), observables=set(), error_mechanisms=[_mech(0.1)]
+    )
+>>>>>>> 5972866 (Release v0.2.4)
     result = assert_failed(check_sensitivity(model))
     assert "more" not in result.counter_example
     assert f"D{_MAX_SHOWN - 1}" in result.counter_example

@@ -15,7 +15,7 @@ from typing import Literal
 # error-severity checks: if one is skipped for missing context, it must surface
 # as inconclusive (exit 2), never a silent skip.
 _DETERMINISTIC_CHECKS = frozenset(
-    {"detectability", "observable_coverage", "probability_bounds"}
+    {"connectivity", "detectability", "observable_coverage", "probability_bounds"}
 )
 
 # Circuit roles under which a check's verdict is meaningless. A run declaring
@@ -63,6 +63,8 @@ PROFILES: dict[str, Profile] = {
             "graphs; demands syndrome-completeness context for detectability."
         ),
         enabled_checks=(
+            "boundary_symmetry",
+            "connectivity",
             "correctability",
             "detectability",
             "duplicates",
@@ -74,6 +76,7 @@ PROFILES: dict[str, Profile] = {
         context_requirements=(
             ("detectability", ("circuit_role", "complete_syndrome")),
         ),
+        severity_overrides=(("connectivity", "error"),),
     ),
     "graphlike-decoder": Profile(
         name="graphlike-decoder",
@@ -82,6 +85,8 @@ PROFILES: dict[str, Profile] = {
             "decoder assumption on every check."
         ),
         enabled_checks=(
+            "boundary_symmetry",
+            "connectivity",
             "correctability",
             "detectability",
             "duplicates",
@@ -98,6 +103,8 @@ PROFILES: dict[str, Profile] = {
             "meaningful; no additional context demands."
         ),
         enabled_checks=(
+            "boundary_symmetry",
+            "connectivity",
             "correctability",
             "detectability",
             "duplicates",
@@ -110,9 +117,12 @@ PROFILES: dict[str, Profile] = {
         name="subsystem-code",
         description=(
             "Subsystem-code DEMs; gauge-related findings stay warnings and "
-            "correctability is model-specific."
+            "correctability is model-specific. Connectivity is not meaningful "
+            "for multi-component subsystem codes and is disabled (not a "
+            "silent pass)."
         ),
         enabled_checks=(
+            "boundary_symmetry",
             "correctability",
             "detectability",
             "duplicates",

@@ -47,6 +47,27 @@ _SYNTHETIC_BUGS = [
         "null_mechanism",
         id="null_mechanism",
     ),
+<<<<<<< HEAD
+=======
+    pytest.param(
+        "high probability mechanism",
+        "error(0.4) D0\ndetector D0",
+        "high_probability_mechanisms",
+        id="high_probability_mechanisms",
+    ),
+    pytest.param(
+        "disconnected decoding graph",
+        "error(0.1) D0\ndetector D0\ndetector D1",
+        "connectivity",
+        id="connectivity",
+    ),
+    pytest.param(
+        "imbalanced observable distances",
+        "error(0.1) L0\nerror(0.1) D0\nerror(0.1) D0 L1\ndetector D0",
+        "boundary_symmetry",
+        id="boundary_symmetry",
+    ),
+>>>>>>> 5972866 (Release v0.2.4)
 ]
 
 

@@ -6,8 +6,6 @@ import argparse
 import importlib.metadata
 import sys
 
-import sys
-
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - Python 3.10 compatibility

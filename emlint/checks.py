@@ -9,6 +9,8 @@ They must include counter_example and counter_example_data when passed=False.
 
 from __future__ import annotations
 
+import heapq
+import itertools
 import math
 from bisect import bisect_right
 from collections import Counter
@@ -20,6 +22,7 @@ from emlint.model import (
     ErrorMechanism,
     ErrorModel,
     RepeatBlock,
+    _shift_target_label,
     _validate_progression_ids,
     _validate_shifted_ids,
 )
@@ -169,6 +172,10 @@ def _shift_mechanism(mechanism: ErrorMechanism, offset: int) -> ErrorMechanism:
             (frozenset(d + offset for d in cdets), cobs)
             for cdets, cobs in mechanism.decomposition_hints
         ),
+        repeated_targets=tuple(
+            _shift_target_label(label, offset) for label in mechanism.repeated_targets
+        ),
+        component_detector_target_counts=(mechanism.component_detector_target_counts),
     )
 
 
@@ -371,6 +378,20 @@ def _origin_mechanisms(
                         item.probability,
                         frozenset(d + scope_start for d in item.detectors),
                         item.observables,
+                        decomposition_hints=tuple(
+                            (
+                                frozenset(d + scope_start for d in cdets),
+                                cobs,
+                            )
+                            for cdets, cobs in item.decomposition_hints
+                        ),
+                        repeated_targets=tuple(
+                            _shift_target_label(label, scope_start)
+                            for label in item.repeated_targets
+                        ),
+                        component_detector_target_counts=(
+                            item.component_detector_target_counts
+                        ),
                     )
                 absolute_signature = (witness.detectors, witness.observables)
                 if absolute_signature in signatures:
@@ -439,6 +460,83 @@ def _format_mech(mech) -> str:
     ]
     suffix = (" " + " ".join(targets)) if targets else ""
     return f"error({mech.probability}){suffix}"
+
+
+def _has_error_mechanisms(model: ErrorModel) -> bool:
+    """Return True when the model declares a mechanism at any nesting depth.
+
+    This is declaration-based, not effect-based: a mechanism whose targets
+    cancel under parity folding still counts as declared.
+
+    Walks the repeat tree without expanding it, so a ``REPEAT 1e15`` block is
+    inspected once. An empty body, or a body holding only nested empty blocks,
+    counts as no mechanism. The tree is validated first, so a malformed model
+    raises the same error here as on the flattening path instead of being
+    silently reported as vacuous.
+    """
+    model._validate_tree()
+
+    def walk(items) -> bool:
+        for item in items:
+            if isinstance(item, ErrorMechanism):
+                return True
+            if isinstance(item, RepeatBlock) and item.count and walk(item.body):
+                return True
+        return False
+
+    return walk(model.error_mechanisms)
+
+
+def _iter_declared_mechanisms(items):
+    """Yield each ``ErrorMechanism`` node once, without expanding repeat blocks.
+
+    Inside a repeat body, detector IDs are iteration-relative, which is exactly
+    what the instruction text said — the right granularity for a parse-level
+    diagnostic.
+    """
+    for item in items:
+        if isinstance(item, ErrorMechanism):
+            yield item
+        elif isinstance(item, RepeatBlock) and item.count:
+            yield from _iter_declared_mechanisms(item.body)
+
+
+def _repeated_target_failure(
+    repeated: list[ErrorMechanism], max_shown: int
+) -> PropertyResult:
+    """Build the ``duplicates`` failure for instructions that repeat a target."""
+    lines = [
+        f"error({mech.probability}) repeats {' '.join(mech.repeated_targets)}"
+        for mech in repeated[:max_shown]
+    ]
+    if len(repeated) > max_shown:
+        lines.append(f"(and {len(repeated) - max_shown} more)")
+    return PropertyResult(
+        name="duplicates",
+        passed=False,
+        severity="warning",
+        message=(
+            f"Found {len(repeated)} mechanism(s) that repeat a target inside "
+            f"one instruction. The parity fold is unambiguous (a repeated "
+            f"target cancels), but DEM readers disagree: some cancel, some "
+            f"keep a self-loop, and at least one mainstream decoder rejects "
+            f"the model. Stim itself folds duplicates before export, so this "
+            f"shape comes from another producer or a hand edit."
+        ),
+        counter_example="\n".join(lines),
+        counter_example_data={
+            "mechanism_count": len(repeated),
+            "mechanisms": [
+                f"error({mech.probability}) repeats "
+                f"{' '.join(mech.repeated_targets)}"
+                for mech in repeated
+            ],
+        },
+        hint=(
+            "Re-export the DEM from a producer that XOR-folds repeated "
+            "targets, or delete the duplicate target (D0 D0 has no effect)."
+        ),
+    )
 
 
 def check_detectability(
@@ -518,9 +616,34 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
     incorrectly or redundant.  It contributes no information to decoding and
     may indicate a missing fault model.
 
+    Limit: a detector whose outcome is constant modulo the reference sample
+    (always fires, or never fires) also has no mechanism in the DEM, so this
+    predicate cannot distinguish it from a dead detector. That is why the
+    finding is a ``warning``, not an ``error``.
+
     Property: ∀d ∈ D, ∃m ∈ mechanisms, d ∈ det(m)
               equivalently: D ⊆ ⋃_{m} det(m)
+
+    A model with no mechanisms at all is reported as ``skipped``: every
+    declared detector is trivially un-triggered, so this predicate cannot
+    separate a dead detector from an empty audit. The report layer already
+    discloses such a model as vacuous; failing each declared detector here
+    would turn a legitimate noiseless artifact (for example an ideal reference
+    DEM compiled by clifft or LightStim) into an ``error``-grade report.
     """
+    if not _has_error_mechanisms(model):
+        return PropertyResult(
+            name="sensitivity",
+            passed=False,
+            severity="warning",
+            status="skipped",
+            message=(
+                "skipped: the DEM declares no error mechanisms, so no detector "
+                "can be shown to be dead; the report discloses the model as "
+                "vacuous."
+            ),
+        )
+
     intervals: dict[tuple[int, int], list[tuple[int, int]]] = {}
     participating: set[int] = set()
     templates = _iter_repeat_templates(model)
@@ -610,7 +733,11 @@ def check_sensitivity(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Propert
                 "miswired or redundant. Expected shape: at least one mechanism "
                 "per stabilizer check per round; look for a missing noise "
                 "instruction on the gates feeding this detector, or a DETECTOR "
-                "declared on a comparison that never receives a fault."
+                "declared on a comparison that never receives a fault. "
+                "Limit: a detector with a constant outcome (fires every shot, "
+                "or never fires) also has no mechanism in the DEM, so it is "
+                "indistinguishable from a dead detector here; check the "
+                "reference sample before treating this as a wiring bug."
             ),
         )
 
@@ -634,7 +761,26 @@ def check_observable_coverage(
 
     Property: ∀ℓ ∈ O, ∃m ∈ mechanisms, ℓ ∈ obs(m)
               equivalently: O ⊆ ⋃_{m} obs(m)
+
+    A model with no mechanisms at all is reported as ``skipped`` rather than as
+    one ``error`` per declared observable. Noiseless compiles keep their
+    observables declared (clifft's ideal reference, LightStim's sequential
+    compile), and the report layer already discloses the model as vacuous;
+    failing every observable would make a correct control artifact exit 1.
     """
+    if not _has_error_mechanisms(model):
+        return PropertyResult(
+            name="observable_coverage",
+            passed=False,
+            severity="error",
+            status="skipped",
+            message=(
+                "skipped: the DEM declares no error mechanisms, so no observable "
+                "can be shown to be uncovered; the report discloses the model as "
+                "vacuous."
+            ),
+        )
+
     covered = {
         observable
         for template in _iter_repeat_templates(model)
@@ -690,7 +836,10 @@ _UNPHYSICAL_TAGS = {"p = NaN", "p = ±inf", "p < 0", "p = 0"}
 def check_probability_bounds(
     model: ErrorModel, max_shown: int = _MAX_SHOWN
 ) -> PropertyResult:
-    """Verify every error mechanism has a probability in (0, 0.5].
+    """Verify every error mechanism has a finite, strictly positive probability.
+
+    Probabilities above 0.5 are not flagged here; they are handled by the
+    separate warning-only check ``high_probability_mechanisms``.
 
     p = 0 is a no-op that should be pruned from the DEM.
     p < 0, p = NaN or p = ±inf indicates a genuine error upstream. On compiler
@@ -707,16 +856,18 @@ def check_probability_bounds(
     p ≥ 0.5, so such a mechanism falls outside the estimable model class of
     Blume-Kohout & Young (arXiv:2504.14643).
 
-    Severity: "error" when any probability is unphysical (NaN, ±inf, ≤ 0);
-              "warning" when all violations are merely p > 0.5.
+    Severity: "error" — every remaining violation is unphysical (NaN, ±inf, ≤ 0).
+    Probabilities with 0.5 < p ≤ 1 are not flagged here; they belong to the
+    warning-only check ``high_probability_mechanisms``.
 
-    Property: ∀m ∈ mechanisms, 0 < p(m) ≤ 0.5  (and p(m) ∉ {NaN, −∞, +∞})
+    Property: ∀m ∈ mechanisms, 0 < p(m) (finite); p > 0.5 is a separate check.
     """
     violating_templates = [
         template
         for template in _iter_repeat_templates(model)
         if math.isnan(template.mechanism.probability)
-        or not (0.0 < template.mechanism.probability <= 0.5)
+        or math.isinf(template.mechanism.probability)
+        or template.mechanism.probability <= 0.0
     ]
     if violating_templates:
         violations = [
@@ -725,13 +876,10 @@ def check_probability_bounds(
         ]
         lines: list[str] = []
         tag_counts: Counter[str] = Counter()
-        has_unphysical = False
         for template, mech in zip(violating_templates, violations):
             p = mech.probability
             tag, hint = _prob_label(p)
             tag_counts[tag] += _template_multiplicity(template)
-            if tag in _UNPHYSICAL_TAGS:
-                has_unphysical = True
             if len(lines) < max_shown:
                 target_parts = [f"D{d}" for d in sorted(mech.detectors)] + [
                     f"L{o}" for o in sorted(mech.observables)
@@ -747,7 +895,7 @@ def check_probability_bounds(
         return PropertyResult(
             name="probability_bounds",
             passed=False,
-            severity="error" if has_unphysical else "warning",
+            severity="error",
             message=(
                 f"Found {total_instances} error mechanism instance(s) across "
                 f"{len(violations)} distinct location(s) with out-of-range "
@@ -764,7 +912,7 @@ def check_probability_bounds(
         name="probability_bounds",
         passed=True,
         severity="error",
-        message="All error mechanism probabilities are in (0, 0.5].",
+        message="All error mechanism probabilities are finite and strictly positive.",
     )
 
 
@@ -803,6 +951,11 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     Property: ∀m, m' ∈ mechanisms, m ≠ m' → (det(m), obs(m)) ≠ (det(m'), obs(m'))
               i.e., the signature map m ↦ (det(m), obs(m)) is injective.
     """
+    repeated = [
+        mechanism
+        for mechanism in _iter_declared_mechanisms(model.error_mechanisms)
+        if mechanism.repeated_targets
+    ]
     reduction = _cross_scope_reduction(model)
     duplicates = {
         signature: state[2]
@@ -810,6 +963,8 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         if state[0] > 1 and state[2] is not None
     }
     if not duplicates:
+        if repeated:
+            return _repeated_target_failure(repeated, max_shown)
         return PropertyResult(
             name="duplicates",
             passed=True,
@@ -858,6 +1013,17 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     counter = "\n".join(lines[:max_shown])
     if len(duplicates) > max_shown:
         counter += f"\n(and {len(duplicates) - max_shown} more)"
+<<<<<<< HEAD
+=======
+    if repeated:
+        repeated_lines = [
+            f"error({mech.probability}) repeats {' '.join(mech.repeated_targets)}"
+            for mech in repeated[:max_shown]
+        ]
+        if len(repeated) > max_shown:
+            repeated_lines.append(f"(and {len(repeated) - max_shown} more)")
+        counter += "\n" + "\n".join(repeated_lines)
+>>>>>>> 5972866 (Release v0.2.4)
     all_dup_mechs: list[str] = []
     for (dets, obs), probs in duplicates.items():
         tgt = " ".join([f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)])
@@ -872,6 +1038,16 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"(mechanisms with different decomposition structures share only "
             f"the merged signature — distinct fault paths, not true duplicates)."
         )
+<<<<<<< HEAD
+=======
+    repeat_clause = ""
+    if repeated:
+        repeat_clause = (
+            f" Additionally, {len(repeated)} mechanism(s) repeat a target "
+            f"inside one instruction; the parity fold cancels the repetition, "
+            f"but not every DEM reader agrees on that reading."
+        )
+>>>>>>> 5972866 (Release v0.2.4)
     result = PropertyResult(
         name="duplicates",
         passed=False,
@@ -885,7 +1061,11 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"fault path may instead be double-counted. The decoder-facing "
             f"probability for a shared signature is the XOR-folded value "
             f"p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), shown per "
+<<<<<<< HEAD
             f"group in the counter-example." + mixed_clause
+=======
+            f"group in the counter-example." + mixed_clause + repeat_clause
+>>>>>>> 5972866 (Release v0.2.4)
         ),
         counter_example=counter,
         counter_example_data={
@@ -893,6 +1073,14 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             "signature_count": total_duplicate_signatures,
             "location_count": len(duplicates),
             "mixed_group_count": mixed_groups,
+<<<<<<< HEAD
+=======
+            "repeated_target_mechanisms": [
+                f"error({mech.probability}) repeats "
+                f"{' '.join(mech.repeated_targets)}"
+                for mech in repeated
+            ],
+>>>>>>> 5972866 (Release v0.2.4)
             "groups": groups,
         },
         hint=(
@@ -1164,7 +1352,428 @@ def check_null_mechanism(
     )
 
 
+<<<<<<< HEAD
+=======
+def _add_edge(graph, left, right) -> None:
+    """Add an undirected unweighted edge to an adjacency-set graph."""
+    graph.setdefault(left, set()).add(right)
+    graph.setdefault(right, set()).add(left)
+
+
+def _connected_components(graph) -> list[set]:
+    """Return connected components using iterative depth-first search."""
+    components = []
+    unseen = set(graph)
+    while unseen:
+        start = unseen.pop()
+        component = {start}
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for neighbour in graph[node]:
+                if neighbour in unseen:
+                    unseen.remove(neighbour)
+                    component.add(neighbour)
+                    stack.append(neighbour)
+        components.append(component)
+    return components
+
+
+def _shortest_weighted_path(graph, start, goal) -> tuple[float, list] | None:
+    """Return (length, node_path) of the shortest weighted path, or None.
+
+    Dijkstra with predecessor tracking. The returned path is the node sequence
+    from ``start`` to ``goal``; callers map consecutive node pairs back to the
+    mechanisms that produced the edges.
+    """
+    distances = {start: 0.0}
+    previous: dict = {}
+    sequence = itertools.count()
+    queue = [(0.0, next(sequence), start)]
+    while queue:
+        distance, _, node = heapq.heappop(queue)
+        if distance != distances.get(node):
+            continue
+        if node == goal:
+            path = [goal]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            path.reverse()
+            return distance, path
+        for neighbour, weight in graph.get(node, {}).items():
+            candidate = distance + weight
+            if candidate < distances.get(neighbour, float("inf")):
+                distances[neighbour] = candidate
+                previous[neighbour] = node
+                heapq.heappush(queue, (candidate, next(sequence), neighbour))
+    return None
+
+
+def _add_weighted_edge(graph, left, right, weight: float) -> None:
+    """Add an undirected weighted edge, matching NetworkX Graph semantics."""
+    graph.setdefault(left, {})[right] = weight
+    graph.setdefault(right, {})[left] = weight
+
+
+def _observable_distances(model) -> dict[int, int | None]:
+    r"""Return {obs: distance_lower_bound} for every declared observable.
+
+    Algorithm — doubled-graph BFS (parity trick):
+        For observable L, the code distance is the minimum weight set of errors
+        whose syndromes cancel (form a logical operator). This equals the
+        shortest path in a "doubled" Tanner graph where each detector node d
+        is split into two copies (d, 0) and (d, 1) representing the two parities
+        of that syndrome node w.r.t. L. An error mechanism that flips L connects
+        opposite-parity copies of its detector nodes; one that does not flips L
+        connects same-parity copies. The boundary injects (boundary, 0)→(boundary, 1).
+        A path from (boundary, 0) to (boundary, 1) of length k corresponds to a
+        weight-k logical operator, so BFS gives the distance.
+
+    Exact for graphable DEMs (weight ≤ 2). For hyperedges (weight > 2), uses
+    star expansion (an auxiliary hub node added per mechanism), giving a
+    lower bound rounded to the nearest integer fault count.
+
+    Alternative approach (not implemented): arXiv 2603.20127 uses a constrained
+    polynomial optimisation kernel over the same error-path space, which could
+    replace or complement BFS for hyperedge-heavy DEMs where star expansion
+    introduces approximation error.  A second alternative is weighted BFS with
+    edge weights $-\log p_j$, which recovers the most-probable-error distance
+    (the standard generalisation when mechanisms have varying probabilities,
+    defined as $\operatorname{arg\,min}_{e \in \mathcal{B}} \sum_j e_j (-\log p_j)$
+    where $\mathcal{B} = \{e \in \mathbb{F}_2^m \mid e \in \ker H, e \notin \ker L\}$).
+    Unweighted BFS (this implementation) is the special case $p_j = \text{const}$.
+    introduces approximation error. Worth revisiting when adding exact hyperedge
+    distance support.
+
+    Returns 0 for observables with a completeness violation (0-detector mechanism
+    that flips the observable). Returns None if the observable is unreachable
+    in the doubled graph (observable_coverage will catch this separately).
+    """
+    _BOUNDARY = "__boundary__"
+
+    # Detect completeness violations up front.
+    zero_det_obs: set[int] = set()
+    for mech in model.flattened():
+        if len(mech.detectors) == 0 and len(mech.observables) > 0:
+            zero_det_obs.update(mech.observables)
+
+    distances: dict[int, int | None] = {}
+    for obs in sorted(model.observables):
+        if obs in zero_det_obs:
+            distances[obs] = 0
+            continue
+
+        g: dict[object, dict[object, float]] = {}
+        for d in model.detectors:
+            g.setdefault((d, 0), {})
+            g.setdefault((d, 1), {})
+        g.setdefault((_BOUNDARY, 0), {})
+        g.setdefault((_BOUNDARY, 1), {})
+
+        for idx, mech in enumerate(model.flattened()):
+            flips = obs in mech.observables
+            dets = sorted(mech.detectors)
+
+            if len(dets) == 0:
+                continue
+
+            if len(dets) == 1:
+                a = dets[0]
+                p0, p1 = (0, 1) if flips else (0, 0)
+                _add_weighted_edge(g, (a, p0), (_BOUNDARY, p1), 1.0)
+                p0, p1 = (1, 0) if flips else (1, 1)
+                _add_weighted_edge(g, (a, p0), (_BOUNDARY, p1), 1.0)
+
+            elif len(dets) == 2:
+                a, b = dets[0], dets[1]
+                p_b0 = 1 if flips else 0
+                _add_weighted_edge(g, (a, 0), (b, p_b0), 1.0)
+                _add_weighted_edge(g, (a, 1), (b, 1 - p_b0), 1.0)
+
+            else:
+                # Hyperedge: star expansion through a virtual center node.
+                center0 = (f"_hub_{idx}", 0)
+                center1 = (f"_hub_{idx}", 1)
+                g.setdefault(center0, {})
+                g.setdefault(center1, {})
+                for d in dets:
+                    _add_weighted_edge(g, (d, 0), center0, 0.5)
+                    _add_weighted_edge(g, (d, 1), center1, 0.5)
+                if flips:
+                    _add_weighted_edge(g, (_BOUNDARY, 0), center1, 0.5)
+                    _add_weighted_edge(g, (_BOUNDARY, 1), center0, 0.5)
+                else:
+                    _add_weighted_edge(g, (_BOUNDARY, 0), center0, 0.5)
+                    _add_weighted_edge(g, (_BOUNDARY, 1), center1, 0.5)
+
+        found = _shortest_weighted_path(g, (_BOUNDARY, 0), (_BOUNDARY, 1))
+        distances[obs] = round(found[0]) if found is not None else None
+
+    return distances
+
+
+def check_boundary_symmetry(
+    model: ErrorModel, max_imbalance: int = 0
+) -> PropertyResult:
+    """Check that per-observable distances are balanced (P6, Boundary Symmetry).
+
+    In CSS codes, X- and Z-type distances can differ. A large spread (max − min > delta)
+    indicates the code wastes resources protecting one error type while being exposed to
+    another. For symmetric constructions (toric, bicycle), all per-observable distances
+    should be equal.
+
+    max_imbalance: maximum allowed difference between the largest and smallest
+    per-observable distance lower bound. Default 0 requires exact equality. Set to 1
+    when using hyperedge DEMs to absorb rounding from star expansion.
+
+    Requires ≥ 2 logical observables; skipped (pass) otherwise.
+
+    Property: max(per-observable distance) - min(per-observable distance) <= max_imbalance.
+    """
+    if len(model.observables) < 2:
+        return PropertyResult(
+            name="boundary_symmetry",
+            passed=True,
+            severity="warning",
+            message=(
+                "Skipped: fewer than 2 logical observables "
+                "(boundary symmetry requires ≥ 2)."
+            ),
+        )
+
+    obs_dists = _observable_distances(model)
+    reachable = {obs: d for obs, d in obs_dists.items() if d is not None}
+
+    if not reachable:
+        return PropertyResult(
+            name="boundary_symmetry",
+            passed=True,
+            severity="warning",
+            message="Could not determine per-observable distances.",
+        )
+
+    max_d = max(reachable.values())
+    min_d = min(reachable.values())
+    imbalance = max_d - min_d
+    dist_str = ", ".join(f"L{obs}={d}" for obs, d in sorted(reachable.items()))
+
+    if imbalance > max_imbalance:
+        worst_low = min(obs for obs, d in reachable.items() if d == min_d)
+        worst_high = max(obs for obs, d in reachable.items() if d == max_d)
+        return PropertyResult(
+            name="boundary_symmetry",
+            passed=False,
+            severity="warning",
+            message=(
+                f"Observable distances are imbalanced ({dist_str}). "
+                f"Resources are wasted protecting the long direction while the short "
+                f"direction is exposed. Spread {imbalance} exceeds threshold {max_imbalance}."
+            ),
+            counter_example=(
+                f"L{worst_high} distance {max_d} vs L{worst_low} distance {min_d}."
+            ),
+            counter_example_data={
+                "distances": {obs: d for obs, d in sorted(reachable.items())},
+                "imbalance": imbalance,
+                "max_imbalance": max_imbalance,
+            },
+        )
+
+    return PropertyResult(
+        name="boundary_symmetry",
+        passed=True,
+        severity="warning",
+        message=f"Observable distances are balanced: {dist_str}.",
+    )
+
+
+def check_connectivity(
+    model: ErrorModel, single_decoding_graph: bool | None = None
+) -> PropertyResult:
+    """Verify the decoding graph forms a single connected component.
+
+    Each logical observable gets its own boundary node (boundary_L0, boundary_L1, …)
+    so that weight-1 mechanisms from spatially separate regions are not falsely merged
+    through a single shared boundary node.  If the model declares no observables, a
+    single generic boundary node is used.
+
+    Global check (v0.3): connectivity is a global topological property of the
+    assembled decoding graph.  It cannot be reduced to a per-mechanism predicate.
+    Per the composition taxonomy (Theorem 4, MV-blindness), no local predicate
+    certifies distance preservation for identifying compositions, so connectivity
+    is verified globally rather than compositionally via a Frame Rule.
+
+    Connectivity is only a correctness invariant when the DEM is a single decoding graph. The
+    severity therefore depends on the declared context:
+
+    - ``single_decoding_graph=True`` (a declared single-decoding-graph profile):
+      a disconnected graph is a genuine defect -> ``error``.
+    - ``single_decoding_graph=None`` (no assumption declared): a disconnected
+      graph is a ``warning`` — the DEM may legitimately be a decomposed or
+      multi-component model, so no fail can be certified.
+    - ``single_decoding_graph=False`` (explicitly decomposed/multi-component):
+      connectivity is not meaningful -> explicit ``skipped``, never a verdict.
+
+    Property: the detector-mechanism Tanner graph has exactly one connected component.
+    """
+    g: dict[object, set] = {}
+    for d in model.detectors:
+        g.setdefault(d, set())
+
+    # One boundary node per declared observable; fall back to a single node when
+    # there are no observables (pure-detector DEMs used in some test contexts).
+    # A separate boundary_noobs node handles weight-1 mechanisms that flip no observable,
+    # preventing them from being arbitrarily merged with observable-specific boundaries.
+    # Boundary nodes are added lazily (via _add_edge) only when a weight-1 mechanism
+    # actually touches them, so unused/isolated boundary nodes do not create
+    # spurious connected components on mechanism-free or multi-detector-only DEMs.
+    if model.observables:
+        boundary_nodes = {obs: f"boundary_L{obs}" for obs in model.observables}
+    else:
+        boundary_nodes = {}
+
+    for mech in model.flattened():
+        dets = sorted(mech.detectors)
+        if len(dets) == 0:
+            pass  # handled by completeness
+        elif len(dets) == 1:
+            # Connect to the boundary node of each declared observable this mechanism
+            # touches; skip any observable not present in boundary_nodes (undeclared).
+            # If it touches no declared observable, connect to the neutral noobs boundary.
+            if mech.observables and boundary_nodes:
+                known_obs = [obs for obs in mech.observables if obs in boundary_nodes]
+                if known_obs:
+                    for obs in known_obs:
+                        _add_edge(g, dets[0], boundary_nodes[obs])
+                else:
+                    _add_edge(g, dets[0], "boundary_noobs")
+            elif boundary_nodes:
+                _add_edge(g, dets[0], "boundary_noobs")
+            else:
+                _add_edge(g, dets[0], "boundary")
+        else:
+            for i in range(len(dets)):
+                for j in range(i + 1, len(dets)):
+                    _add_edge(g, dets[i], dets[j])
+
+    boundary_set = set(boundary_nodes.values()) | {"boundary", "boundary_noobs"}
+    components = _connected_components(g)
+    if len(components) > 1:
+        det_components = [
+            sorted(c for c in comp if c not in boundary_set) for comp in components
+        ]
+        parts = "; ".join(
+            f"Component {i + 1}: {comp}" for i, comp in enumerate(det_components)
+        )
+        if single_decoding_graph is False:
+            # Explicitly decomposed/multi-component model: connectivity is not
+            # meaningful, so report an explicit skip rather than a verdict.
+            return PropertyResult(
+                name="connectivity",
+                passed=False,
+                severity="warning",
+                status="skipped",
+                message=(
+                    "skipped: the DEM is explicitly decomposed/multi-component, "
+                    "so single-graph connectivity is not a meaningful invariant."
+                ),
+            )
+        severity = "error" if single_decoding_graph else "warning"
+        return PropertyResult(
+            name="connectivity",
+            passed=False,
+            severity=severity,
+            message=f"Decoding graph has {len(components)} connected components.",
+            counter_example=parts,
+            counter_example_data={"components": det_components},
+        )
+
+    return PropertyResult(
+        name="connectivity",
+        passed=True,
+        severity="error" if single_decoding_graph else "warning",
+        message="Decoding graph is fully connected.",
+    )
+
+
+>>>>>>> 5972866 (Release v0.2.4)
 # Check Registry
+def check_high_probability_mechanisms(
+    model: ErrorModel, threshold: float = 0.3
+) -> PropertyResult:
+    """Verify no error mechanism has probability above the configured threshold.
+
+    High-probability mechanisms (p > threshold, default 0.3) on a low-noise
+    device are a strong signal of a probability-accumulation bug: naive addition
+    instead of XOR convolution when composing sub-circuit DEMs.
+    `probability_bounds` catches the extreme case (p > 0.5); this check catches
+    the intermediate range that is numerically valid yet suspicious.
+
+    A rate outlier is not always accumulation: coherent interference can
+    legitimately double a mechanism's rate (e.g. boundary edges of rotated
+    surface codes, sin²(2θ) vs. the independent-combination value — Takou &
+    Brown arXiv:2510.23797 §III.1). The absolute threshold is far above such
+    doubling at physical angles; a relative-rate variant of this check would
+    false-flag coherent DEMs and is rejected (notes/NEGATIVE_RESULTS.md,
+    2026-10-06).
+
+    Adjust threshold upward (e.g. 0.4) for intentionally high-noise test DEMs.
+
+    Property: ∀m ∈ mechanisms, p(m) ≤ threshold
+    (threshold defaults to 0.3; mechanisms at or below the threshold pass)
+    """
+    violating_templates = [
+        template
+        for template in _iter_repeat_templates(model)
+        if template.mechanism.probability > threshold
+    ]
+
+    if violating_templates:
+        violations = [
+            _shift_mechanism(template.mechanism, template.absolute_start)
+            for template in violating_templates
+        ]
+        offenders_sorted = sorted(violations, key=lambda m: m.probability, reverse=True)
+        worst = offenders_sorted[0]
+        targets = " ".join(f"D{d}" for d in sorted(worst.detectors))
+        obs_str = (
+            (" " + " ".join(f"L{o}" for o in sorted(worst.observables)))
+            if worst.observables
+            else ""
+        )
+        counter = (
+            f"error({worst.probability}) {targets}{obs_str} "
+            f"— highest probability mechanism (threshold: {threshold})"
+        )
+        total_instances = sum(_template_multiplicity(t) for t in violating_templates)
+        return PropertyResult(
+            name="high_probability_mechanisms",
+            passed=False,
+            severity="warning",
+            message=(
+                f"Found {total_instances} mechanism instance(s) across "
+                f"{len(violations)} distinct location(s) with probability > {threshold}. "
+                f"On a low-noise device this is unexpected and may indicate that "
+                f"probabilities were summed (p1 + p2) instead of correctly combined "
+                f"(p1 + p2 - 2*p1*p2) when merging sub-circuit DEMs. Consider "
+                f"reviewing DEM generation code or passing a higher threshold to "
+                f"check_high_probability_mechanisms if high noise is intentional."
+            ),
+            counter_example=counter,
+            counter_example_data={
+                "mechanisms": [_format_mech(m) for m in violations],
+                "instance_count": total_instances,
+            },
+        )
+
+    return PropertyResult(
+        name="high_probability_mechanisms",
+        passed=True,
+        severity="warning",
+        message=f"All mechanism probabilities are ≤ {threshold}.",
+    )
+
+
 LOCAL_CHECKS: dict[str, CheckFn] = {
     "detectability": check_detectability,
     "sensitivity": check_sensitivity,
@@ -1173,7 +1782,19 @@ LOCAL_CHECKS: dict[str, CheckFn] = {
     "duplicates": check_duplicates,
     "correctability": check_correctability,
     "null_mechanism": check_null_mechanism,
+<<<<<<< HEAD
+=======
+    "high_probability_mechanisms": check_high_probability_mechanisms,
+>>>>>>> 5972866 (Release v0.2.4)
 }
 
-# ALL_CHECKS is the public registry used by emlint.check() and the CLI.
-ALL_CHECKS = dict(LOCAL_CHECKS)
+# Global checks: topological properties of the assembled decoding graph. These
+# require the full mechanism set and cannot be reduced to per-mechanism tests.
+GLOBAL_CHECKS: dict[str, CheckFn] = {
+    "connectivity": check_connectivity,
+    "boundary_symmetry": check_boundary_symmetry,
+}
+
+# ALL_CHECKS is the public registry used by emlint.check() and the CLI; it is
+# the union of the local and global check families.
+ALL_CHECKS = {**LOCAL_CHECKS, **GLOBAL_CHECKS}

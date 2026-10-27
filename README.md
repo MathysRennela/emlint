@@ -44,6 +44,10 @@ A d=5 surface-code DEM with a missing detector connection
 ```text
 $ emlint check examples/buggy.dem
 Detectors: 24  Observables: 1  Error mechanisms: 31
+<<<<<<< HEAD
+=======
+DEM-only analysis: findings do not establish circuit semantic correctness.
+>>>>>>> 5972866 (Release v0.2.4)
 
   ✓ detectability: All error mechanisms that flip observables also trigger detectors.
   ✗ [warning] sensitivity: 1 detector(s) are never triggered by any error mechanism.
@@ -51,19 +55,42 @@ Detectors: 24  Observables: 1  Error mechanisms: 31
         Hint: Hypothesis: a detector no mechanism ever triggers is either miswired or
         redundant. Expected shape: at least one mechanism per stabilizer check per
         round; look for a missing noise instruction on the gates feeding this detector,
+<<<<<<< HEAD
         or a DETECTOR declared on a comparison that never receives a fault.
   ✓ observable_coverage: All declared observables are flipped by at least one error mechanism.
   ✓ probability_bounds: All error mechanism probabilities are in (0, 0.5].
   ✓ duplicates: No duplicate mechanism signatures found.
   ✓ correctability: Every syndrome maps to at most one distinct set of logical observables.
   ✓ null_mechanism: No mechanism has empty detector and observable support.
+=======
+        or a DETECTOR declared on a comparison that never receives a fault. Limit: a
+        detector with a constant outcome (fires every shot, or never fires) also has no
+        mechanism in the DEM, so it is indistinguishable from a dead detector here;
+        check the reference sample before treating this as a wiring bug.
+  ✓ observable_coverage: All declared observables are flipped by at least one error mechanism.
+  ✓ probability_bounds: All error mechanism probabilities are finite and strictly positive.
+  ✓ duplicates: No duplicate mechanism signatures found.
+  ✓ correctability: Every syndrome maps to at most one distinct set of logical observables.
+  ✓ null_mechanism: No mechanism has empty detector and observable support.
+  ✓ high_probability_mechanisms: All mechanism probabilities are ≤ 0.3.
+  ✗ [warning] connectivity: Decoding graph has 2 connected components.
+        Counter-example: Component 1: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+        15, 16, 18, 19, 20, 21, 22, 23]; Component 2: [17]
+  ✓ boundary_symmetry: Skipped: fewer than 2 logical observables (boundary symmetry requires ≥ 2).
+>>>>>>> 5972866 (Release v0.2.4)
 ```
 
 After reconnecting `D17` to its neighbours
 ([`examples/fixed.dem`](examples/fixed.dem)), every check passes. The
+<<<<<<< HEAD
 counter-example names the exact detector (`D17@(1,0,2)`) so the fix is
 localized. More generated examples live in
 [`examples/`](examples/README.md).
+=======
+counter-examples name the exact detector (`D17@(1,0,2)`) and the isolated
+decoding-graph component (`[17]`), so the fix is localized. More generated
+examples live in [`examples/`](examples/README.md).
+>>>>>>> 5972866 (Release v0.2.4)
 
 > **v0.2 is preliminary.** The user-facing behavior is usable, but internal APIs
 > and implementation details may change before v1.0.
@@ -129,8 +156,10 @@ print(emlint.format_text(report))
 > **Note:** on DEMs produced with `decompose_errors=True`, the `duplicates`
 > check (warning) may report mechanisms that share a detector signature after
 > graphlike decomposition as "duplicates". This is expected decomposition
-> output, not a concatenation bug. Use the `graphlike-decoder` profile context
-> when a graphlike matcher is the intended decoder.
+> output, not a concatenation bug. The `graphlike-decoder` profile requires an
+> explicit decoder context for compatibility checks; it does not suppress this
+> warning, which can still make a correct DEM exit with code 2. Use `--ignore duplicates`
+> only when you deliberately want to skip this advisory check.
 
 ## Exit codes
 

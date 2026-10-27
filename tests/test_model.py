@@ -403,6 +403,16 @@ def test_model_rejects_non_numeric_probability():
         model._validate_tree()
 
 
+<<<<<<< HEAD
+=======
+def test_model_rejects_malformed_repeated_target_label():
+    mech = ErrorMechanism(0.1, frozenset(), frozenset(), repeated_targets=("Dx",))
+    model = ErrorModel(detectors=set(), observables=set(), error_mechanisms=[mech])
+    with pytest.raises(ValueError, match="must be a D<n> or L<n> target label"):
+        model._validate_tree()
+
+
+>>>>>>> 5972866 (Release v0.2.4)
 def test_model_rejects_non_tuple_decomposition_hints():
     """decomposition_hints must be a tuple (catches the uncovered TypeError)."""
     mech = ErrorMechanism(0.1, frozenset({0}), frozenset(), decomposition_hints="nope")

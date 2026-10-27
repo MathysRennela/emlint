@@ -13,9 +13,16 @@ import math
 from hypothesis import given, strategies as st
 
 from emlint.checks import (
+    _observable_distances,
+    check_boundary_symmetry,
+    check_connectivity,
     check_correctability,
     check_detectability,
     check_duplicates,
+<<<<<<< HEAD
+=======
+    check_high_probability_mechanisms,
+>>>>>>> 5972866 (Release v0.2.4)
     check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
@@ -24,13 +31,22 @@ from emlint.checks import (
 from emlint.model import ErrorMechanism, ErrorModel, RepeatBlock
 
 _CHECKS = (
+    check_boundary_symmetry,
+    check_connectivity,
+    check_correctability,
     check_detectability,
-    check_sensitivity,
+    check_duplicates,
+    check_high_probability_mechanisms,
+    check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
+<<<<<<< HEAD
     check_duplicates,
     check_correctability,
     check_null_mechanism,
+=======
+    check_sensitivity,
+>>>>>>> 5972866 (Release v0.2.4)
 )
 
 
@@ -98,6 +114,64 @@ def _repeat_models(draw):
     )
 
 
+def _connectivity_oracle(model: ErrorModel) -> bool:
+    g: dict[object, set[object]] = {d: set() for d in model.detectors}
+    boundary_nodes = (
+        {obs: f"boundary_L{obs}" for obs in model.observables}
+        if model.observables
+        else {}
+    )
+    for mech in model.flattened():
+        dets = sorted(mech.detectors)
+        if len(dets) == 0:
+            continue
+        if len(dets) == 1:
+            if mech.observables and boundary_nodes:
+                known = [obs for obs in mech.observables if obs in boundary_nodes]
+                if known:
+                    for obs in known:
+                        g.setdefault(dets[0], set()).add(boundary_nodes[obs])
+                        g.setdefault(boundary_nodes[obs], set()).add(dets[0])
+                else:
+                    g.setdefault(dets[0], set()).add("boundary_noobs")
+                    g.setdefault("boundary_noobs", set()).add(dets[0])
+            elif boundary_nodes:
+                g.setdefault(dets[0], set()).add("boundary_noobs")
+                g.setdefault("boundary_noobs", set()).add(dets[0])
+            else:
+                g.setdefault(dets[0], set()).add("boundary")
+                g.setdefault("boundary", set()).add(dets[0])
+        else:
+            for i in range(len(dets)):
+                for j in range(i + 1, len(dets)):
+                    g.setdefault(dets[i], set()).add(dets[j])
+                    g.setdefault(dets[j], set()).add(dets[i])
+    unseen = set(g)
+    components = 0
+    while unseen:
+        components += 1
+        start = unseen.pop()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for neighbour in g.get(node, ()):
+                if neighbour in unseen:
+                    unseen.remove(neighbour)
+                    stack.append(neighbour)
+    return components <= 1
+
+
+def _boundary_symmetry_oracle(model: ErrorModel) -> bool:
+    if len(model.observables) < 2:
+        return True
+    reachable = {
+        obs: d for obs, d in _observable_distances(model).items() if d is not None
+    }
+    if not reachable:
+        return True
+    return max(reachable.values()) - min(reachable.values()) <= 0
+
+
 def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
     mechanisms = model.flattened()
 
@@ -109,10 +183,6 @@ def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
         )
 
     probability_invalid = any(
-        math.isnan(m.probability) or not (0.0 < m.probability <= 0.5)
-        for m in mechanisms
-    )
-    probability_error = any(
         math.isnan(m.probability)
         or not math.isfinite(m.probability)
         or m.probability <= 0.0
@@ -123,17 +193,28 @@ def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
             all(not m.observables or m.detectors for m in mechanisms),
             "error",
         ),
+        # A mechanism-free DEM is reported as skipped (passed=False, status
+        # "skipped"): the two predicates cannot separate a dead object from an
+        # empty audit, and the report layer discloses the model as vacuous.
         "sensitivity": (
-            model.detectors <= {d for m in mechanisms for d in m.detectors},
+            (
+                False
+                if not mechanisms
+                else model.detectors <= {d for m in mechanisms for d in m.detectors}
+            ),
             "warning",
         ),
         "observable_coverage": (
-            model.observables <= {o for m in mechanisms for o in m.observables},
+            (
+                False
+                if not mechanisms
+                else model.observables <= {o for m in mechanisms for o in m.observables}
+            ),
             "error",
         ),
         "probability_bounds": (
             not probability_invalid,
-            "error" if not probability_invalid or probability_error else "warning",
+            "error",
         ),
         "duplicates": (
             len(signatures) == len(set(signatures)),
@@ -150,6 +231,21 @@ def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
             all(m.detectors or m.observables for m in mechanisms),
             "warning",
         ),
+<<<<<<< HEAD
+=======
+        "high_probability_mechanisms": (
+            all(not (m.probability > 0.3) for m in mechanisms),
+            "warning",
+        ),
+        "connectivity": (
+            _connectivity_oracle(model),
+            "warning",
+        ),
+        "boundary_symmetry": (
+            _boundary_symmetry_oracle(model),
+            "warning",
+        ),
+>>>>>>> 5972866 (Release v0.2.4)
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import stim
@@ -55,35 +56,65 @@ def _walk_dem_instructions(
                 det_targets: set[int] = set()
                 obs_targets: set[int] = set()
                 decomposition_hints: list[tuple[frozenset[int], frozenset[int]]] = []
+                component_detector_target_counts: list[int] = []
                 comp_dets: set[int] = set()
                 comp_obs: set[int] = set()
+                comp_detector_target_count = 0
+                target_counts: Counter[str] = Counter()
+                repeated: set[str] = set()
+
+                def collect_repeats() -> None:
+                    repeated.update(
+                        label for label, count in target_counts.items() if count > 1
+                    )
+                    target_counts.clear()
+
                 for t in instruction.targets_copy():
                     if isinstance(t, stim.DemTarget) and t.is_relative_detector_id():
                         det_targets ^= {t.val + current_offset}
                         comp_dets ^= {t.val + current_offset}
+                        comp_detector_target_count += 1
+                        target_counts[f"D{t.val + current_offset}"] += 1
                     elif isinstance(t, stim.DemTarget) and t.is_logical_observable_id():
                         obs_targets ^= {t.val}
                         comp_obs ^= {t.val}
+                        target_counts[f"L{t.val}"] += 1
                     elif isinstance(t, stim.DemTarget) and t.is_separator():
                         # ^ marks a component boundary: record the completed
                         # component and start a new one. The merged signature
-                        # above is kept independently of these hints.
+                        # above is kept independently of these hints. Repeats are
+                        # counted per component: a detector listed once in each of
+                        # two components is a legitimate cross-component overlap,
+                        # not a repeated target.
+                        collect_repeats()
                         decomposition_hints.append(
                             (frozenset(comp_dets), frozenset(comp_obs))
                         )
+                        component_detector_target_counts.append(
+                            comp_detector_target_count
+                        )
                         comp_dets = set()
                         comp_obs = set()
+                        comp_detector_target_count = 0
                     # integer targets are silently dropped.
+                collect_repeats()
                 if decomposition_hints:
                     decomposition_hints.append(
                         (frozenset(comp_dets), frozenset(comp_obs))
                     )
+                    component_detector_target_counts.append(comp_detector_target_count)
+                else:
+                    component_detector_target_counts.append(comp_detector_target_count)
                 result.append(
                     ErrorMechanism(
                         probability=prob,
                         detectors=frozenset(det_targets),
                         observables=frozenset(obs_targets),
                         decomposition_hints=tuple(decomposition_hints),
+                        repeated_targets=tuple(sorted(repeated)),
+                        component_detector_target_counts=tuple(
+                            component_detector_target_counts
+                        ),
                     )
                 )
 

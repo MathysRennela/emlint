@@ -11,6 +11,8 @@ import stim
 from emlint import frontends
 from emlint.checks import (
     ALL_CHECKS,
+    check_boundary_symmetry,
+    check_connectivity,
     check_correctability,
     check_detectability,
     check_duplicates,
