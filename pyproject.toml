@@ -4,11 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emlint"
-<<<<<<< HEAD
-version = "0.2.3"
-=======
 version = "0.2.4"
->>>>>>> 5972866 (Release v0.2.4)
 description = "A static analysis tool for quantum error correction"
 readme = "README.md"
 requires-python = ">=3.10"

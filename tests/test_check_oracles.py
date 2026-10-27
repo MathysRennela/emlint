@@ -19,10 +19,7 @@ from emlint.checks import (
     check_correctability,
     check_detectability,
     check_duplicates,
-<<<<<<< HEAD
-=======
     check_high_probability_mechanisms,
->>>>>>> 5972866 (Release v0.2.4)
     check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
@@ -40,13 +37,7 @@ _CHECKS = (
     check_null_mechanism,
     check_observable_coverage,
     check_probability_bounds,
-<<<<<<< HEAD
-    check_duplicates,
-    check_correctability,
-    check_null_mechanism,
-=======
     check_sensitivity,
->>>>>>> 5972866 (Release v0.2.4)
 )
 
 
@@ -231,8 +222,6 @@ def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
             all(m.detectors or m.observables for m in mechanisms),
             "warning",
         ),
-<<<<<<< HEAD
-=======
         "high_probability_mechanisms": (
             all(not (m.probability > 0.3) for m in mechanisms),
             "warning",
@@ -245,7 +234,6 @@ def _oracle_results(model: ErrorModel) -> dict[str, tuple[bool, str]]:
             _boundary_symmetry_oracle(model),
             "warning",
         ),
->>>>>>> 5972866 (Release v0.2.4)
     }
 
 

@@ -1013,8 +1013,6 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
     counter = "\n".join(lines[:max_shown])
     if len(duplicates) > max_shown:
         counter += f"\n(and {len(duplicates) - max_shown} more)"
-<<<<<<< HEAD
-=======
     if repeated:
         repeated_lines = [
             f"error({mech.probability}) repeats {' '.join(mech.repeated_targets)}"
@@ -1023,7 +1021,6 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
         if len(repeated) > max_shown:
             repeated_lines.append(f"(and {len(repeated) - max_shown} more)")
         counter += "\n" + "\n".join(repeated_lines)
->>>>>>> 5972866 (Release v0.2.4)
     all_dup_mechs: list[str] = []
     for (dets, obs), probs in duplicates.items():
         tgt = " ".join([f"D{d}" for d in sorted(dets)] + [f"L{o}" for o in sorted(obs)])
@@ -1038,8 +1035,6 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"(mechanisms with different decomposition structures share only "
             f"the merged signature — distinct fault paths, not true duplicates)."
         )
-<<<<<<< HEAD
-=======
     repeat_clause = ""
     if repeated:
         repeat_clause = (
@@ -1047,7 +1042,6 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"inside one instruction; the parity fold cancels the repetition, "
             f"but not every DEM reader agrees on that reading."
         )
->>>>>>> 5972866 (Release v0.2.4)
     result = PropertyResult(
         name="duplicates",
         passed=False,
@@ -1061,11 +1055,7 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             f"fault path may instead be double-counted. The decoder-facing "
             f"probability for a shared signature is the XOR-folded value "
             f"p_eff = p1*(1-p2) + p2*(1-p1) (iterated for 3+), shown per "
-<<<<<<< HEAD
-            f"group in the counter-example." + mixed_clause
-=======
             f"group in the counter-example." + mixed_clause + repeat_clause
->>>>>>> 5972866 (Release v0.2.4)
         ),
         counter_example=counter,
         counter_example_data={
@@ -1073,14 +1063,11 @@ def check_duplicates(model: ErrorModel, max_shown: int = _MAX_SHOWN) -> Property
             "signature_count": total_duplicate_signatures,
             "location_count": len(duplicates),
             "mixed_group_count": mixed_groups,
-<<<<<<< HEAD
-=======
             "repeated_target_mechanisms": [
                 f"error({mech.probability}) repeats "
                 f"{' '.join(mech.repeated_targets)}"
                 for mech in repeated
             ],
->>>>>>> 5972866 (Release v0.2.4)
             "groups": groups,
         },
         hint=(
@@ -1352,8 +1339,6 @@ def check_null_mechanism(
     )
 
 
-<<<<<<< HEAD
-=======
 def _add_edge(graph, left, right) -> None:
     """Add an undirected unweighted edge to an adjacency-set graph."""
     graph.setdefault(left, set()).add(right)
@@ -1696,7 +1681,6 @@ def check_connectivity(
     )
 
 
->>>>>>> 5972866 (Release v0.2.4)
 # Check Registry
 def check_high_probability_mechanisms(
     model: ErrorModel, threshold: float = 0.3
@@ -1782,10 +1766,7 @@ LOCAL_CHECKS: dict[str, CheckFn] = {
     "duplicates": check_duplicates,
     "correctability": check_correctability,
     "null_mechanism": check_null_mechanism,
-<<<<<<< HEAD
-=======
     "high_probability_mechanisms": check_high_probability_mechanisms,
->>>>>>> 5972866 (Release v0.2.4)
 }
 
 # Global checks: topological properties of the assembled decoding graph. These

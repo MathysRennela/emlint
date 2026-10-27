@@ -390,11 +390,7 @@ def test_valid_probability_from_stim_dem_passes():
 def test_probability_bounds_truncation_boundary_exactly_max_shown():
     """Exactly _MAX_SHOWN violating mechanisms must render all of them.
     (Catches the `len(lines)<max_shown`→`<=` mutant.)"""
-<<<<<<< HEAD
-    mechs = [_mech(0.9, frozenset({i})) for i in range(_MAX_SHOWN)]
-=======
     mechs = [_mech(-0.1, frozenset({i})) for i in range(_MAX_SHOWN)]
->>>>>>> 5972866 (Release v0.2.4)
     result = assert_failed(check_probability_bounds(_model(*mechs)))
     assert "more" not in result.counter_example
     assert f"D{_MAX_SHOWN - 1}" in result.counter_example

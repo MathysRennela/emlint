@@ -3,8 +3,6 @@
 User-visible changes to emlint. 
 Versions follow [Semantic Versioning](https://semver.org/).
 
-<<<<<<< HEAD
-=======
 ## [0.2.4] — 2026-10-27
 
 Maintainer-owned experimental checks and promotion wave. Ships the promotion of
@@ -55,7 +53,6 @@ Maintainer-owned experimental checks and promotion wave. Ships the promotion of
 - `distance` remains experimental (no sound per-mechanism hyperedge bound yet).
 - Bounded checks are O(n^k); large DEMs require a small `max_weight`.
 
->>>>>>> 5972866 (Release v0.2.4)
 ## [0.2.3] — 2026-10-21
 
 Hardening release for existing checks and report/CLI behavior, plus the
@@ -202,10 +199,7 @@ Initial release with six production checks:
 The CLI supports text/JSON output, check selection, severity filtering, and
 exit codes `0` (pass), `1` (error), and `2` (warnings only).
 
-<<<<<<< HEAD
-=======
 [0.2.4]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.4
->>>>>>> 5972866 (Release v0.2.4)
 [0.2.3]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.3
 [0.2.2]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.2
 [0.2.1]: https://github.com/MathysRennela/emlint/releases/tag/v0.2.1

@@ -1,10 +1,6 @@
 # Check catalog
 
-<<<<<<< HEAD
-This page describes the seven production checks in emlint v0.2. Each check
-=======
 This page describes the production checks in emlint v0.2. Each check
->>>>>>> 5972866 (Release v0.2.4)
 returns a `PropertyResult` with a pass/fail status, severity, message, and (on
 failure) a counter-example.
 
@@ -19,12 +15,9 @@ failure) a counter-example.
 | `duplicates` | Cross-mechanism relation | Repeated detector/observable signatures | warning | Exact shared flattening; repetition can create collisions |
 | `correctability` | Cross-mechanism relation | Syndrome-to-observable ambiguity | warning | Exact shared flattening; repetition can create conflicts |
 | `null_mechanism` | Per mechanism | Error mechanism with empty detector and observable support | warning | Template-local; repetition preserves emptiness |
-<<<<<<< HEAD
-=======
 | `high_probability_mechanisms` | Per mechanism | Mechanism probability above threshold (default 0.3) | warning | Template-local; probabilities are not shifted |
 | `connectivity` | Global graph | Disconnected detector-mechanism Tanner graph components | error or warning (profile-scoped) | Uses flattened model; repeat expansion is global |
 | `boundary_symmetry` | Global graph | Imbalanced per-observable distance lower bounds | warning | Uses flattened model; repeat expansion is global |
->>>>>>> 5972866 (Release v0.2.4)
 
 ## Report disclosures
 
@@ -116,8 +109,6 @@ does not already carry. The check is therefore template-local, and a repeat
 body is reported as one witness per template plus an `instance_count` rather
 than as one entry per expanded iteration.
 
-<<<<<<< HEAD
-=======
 ### `connectivity`
 
 Verifies that the detector-mechanism Tanner graph forms a single connected
@@ -131,7 +122,6 @@ decomposed or multi-component models.
 Checks that per-observable distance lower bounds are balanced. Requires at
 least two logical observables; skipped otherwise. Warning severity.
 
->>>>>>> 5972866 (Release v0.2.4)
 ## Repeat-aware evaluation boundaries
 
 The production checks do not all admit the same repeat optimization:

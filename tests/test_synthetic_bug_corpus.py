@@ -47,8 +47,6 @@ _SYNTHETIC_BUGS = [
         "null_mechanism",
         id="null_mechanism",
     ),
-<<<<<<< HEAD
-=======
     pytest.param(
         "high probability mechanism",
         "error(0.4) D0\ndetector D0",
@@ -67,7 +65,6 @@ _SYNTHETIC_BUGS = [
         "boundary_symmetry",
         id="boundary_symmetry",
     ),
->>>>>>> 5972866 (Release v0.2.4)
 ]
 
 

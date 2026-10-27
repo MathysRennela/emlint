@@ -80,8 +80,6 @@ def test_registered_check_reports_counterexamples_on_failure(
             set(),
             [ErrorMechanism(0.1, frozenset(), frozenset())],
         ),
-<<<<<<< HEAD
-=======
         "high_probability_mechanisms": ErrorModel(
             set(),
             set(),
@@ -104,7 +102,6 @@ def test_registered_check_reports_counterexamples_on_failure(
                 ErrorMechanism(0.1, frozenset({0}), frozenset({1})),
             ],
         ),
->>>>>>> 5972866 (Release v0.2.4)
     }
     result = check_fn(cases[name])
     assert not result.passed
@@ -155,8 +152,6 @@ def test_registered_check_hint_contract(name: str, check_fn: Callable) -> None:
             set(),
             [ErrorMechanism(0.1, frozenset(), frozenset())],
         ),
-<<<<<<< HEAD
-=======
         "high_probability_mechanisms": ErrorModel(
             set(),
             set(),
@@ -179,7 +174,6 @@ def test_registered_check_hint_contract(name: str, check_fn: Callable) -> None:
                 ErrorMechanism(0.1, frozenset({0}), frozenset({1})),
             ],
         ),
->>>>>>> 5972866 (Release v0.2.4)
     }
     result = check_fn(cases[name])
     assert not result.passed
@@ -203,16 +197,12 @@ def test_validate_check_signature(check_fn: Callable) -> None:
     params = list(sig.parameters.values())
     assert params[0].name == "model"
     assert len(params) == 2
-<<<<<<< HEAD
-    assert params[1].name == "max_shown"
-=======
     assert params[1].name in {
         "max_shown",
         "threshold",
         "single_decoding_graph",
         "max_imbalance",
     }
->>>>>>> 5972866 (Release v0.2.4)
 
 
 # ---------------------------------------------------------------------------

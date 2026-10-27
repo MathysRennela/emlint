@@ -7,9 +7,6 @@ name: CI
 on:
   push:
     branches: [main]
-<<<<<<< HEAD
-  pull_request:
-=======
     paths-ignore:
       - "docs/**"
       - "*.md"
@@ -19,21 +16,11 @@ on:
       - "docs/**"
       - "*.md"
       - "mkdocs.yml"
->>>>>>> 5972866 (Release v0.2.4)
 
 permissions:
   contents: read
   id-token: write
 
-<<<<<<< HEAD
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-=======
 # Cancel superseded runs to save CI minutes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -49,7 +36,6 @@ jobs:
         # Test the oldest supported version and the newest one we target.
         # The middle version is covered transitively by the min/max pair.
         python-version: ["3.10", "3.12"]
->>>>>>> 5972866 (Release v0.2.4)
 
     steps:
       - uses: actions/checkout@v7
@@ -58,24 +44,12 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-<<<<<<< HEAD
-=======
           cache: pip
->>>>>>> 5972866 (Release v0.2.4)
 
       - name: Install package and dev dependencies
         run: pip install -e ".[dev]"
 
       - name: Check formatting with black
-<<<<<<< HEAD
-        run: black --check .
-
-      - name: Run tests with warnings as errors
-        run: python -m pytest tests/ -W error -q --cov=emlint --cov-report=xml
-
-      - name: Upload coverage to Codecov
-        if: github.repository == 'MathysRennela/emlint'
-=======
         if: matrix.python-version == '3.12'
         run: black --check .
 
@@ -89,7 +63,6 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && github.repository == 'MathysRennela/emlint'
->>>>>>> 5972866 (Release v0.2.4)
         uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
@@ -99,10 +72,7 @@ jobs:
 
   cli-gates:
     runs-on: ubuntu-latest
-<<<<<<< HEAD
-=======
     timeout-minutes: 10
->>>>>>> 5972866 (Release v0.2.4)
     steps:
       - uses: actions/checkout@v7
 
@@ -110,10 +80,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-<<<<<<< HEAD
-=======
           cache: pip
->>>>>>> 5972866 (Release v0.2.4)
 
       - name: Install package
         run: pip install -e ".[dev]"
@@ -134,10 +101,7 @@ jobs:
     # Merged from emlint-check.yml + emlint-nonblocking.yml: one install,
     # blocking reference-DEM gate plus non-blocking corpus lint.
     runs-on: ubuntu-latest
-<<<<<<< HEAD
-=======
     timeout-minutes: 20
->>>>>>> 5972866 (Release v0.2.4)
     steps:
       - uses: actions/checkout@v7
 
@@ -145,10 +109,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-<<<<<<< HEAD
-=======
           cache: pip
->>>>>>> 5972866 (Release v0.2.4)
 
       - name: Install emlint
         run: python -m pip install .
@@ -165,8 +126,4 @@ jobs:
             echo "::endgroup::"
           done
           end=$(date +%s)
-<<<<<<< HEAD
           echo "Total runtime: $((end-start))s"
-=======
-          echo "Total runtime: $((end-start))s"
->>>>>>> 5972866 (Release v0.2.4)

@@ -872,8 +872,6 @@ def test_duplicates_empty_signature_group():
     signature and must be flagged as duplicates."""
     result = assert_failed(check_duplicates(_model(_mech(0.1), _mech(0.2))))
     assert "(no detectors)" in result.counter_example
-<<<<<<< HEAD
-=======
 
 
 # ---------------------------------------------------------------------------
@@ -940,4 +938,3 @@ def test_repeated_target_in_zero_count_repeat_is_ignored() -> None:
         error_mechanisms=[RepeatBlock((dead_mechanism,), count=0)],
     )
     assert check_duplicates(model).passed
->>>>>>> 5972866 (Release v0.2.4)

@@ -400,13 +400,9 @@ def test_sensitivity_truncation_boundary_exactly_max_shown():
     """Exactly _MAX_SHOWN dead detectors must render all of them with no
     overflow note. (Catches the `> max_shown`→`>=` mutant.)"""
     dead = list(range(_MAX_SHOWN))
-<<<<<<< HEAD
-    model = ErrorModel(detectors=set(dead), observables=set(), error_mechanisms=[])
-=======
     model = ErrorModel(
         detectors=set(dead), observables=set(), error_mechanisms=[_mech(0.1)]
     )
->>>>>>> 5972866 (Release v0.2.4)
     result = assert_failed(check_sensitivity(model))
     assert "more" not in result.counter_example
     assert f"D{_MAX_SHOWN - 1}" in result.counter_example
