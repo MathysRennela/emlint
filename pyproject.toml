@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "emlint"
 version = "0.2.4"
-description = "A static analysis tool for quantum error correction"
+description = "A static linter for Stim Detector Error Models (DEMs)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -20,6 +20,13 @@ keywords = [
     "stim",
     "linter",
 ]
+[project.urls]
+Homepage = "https://github.com/MathysRennela/emlint"
+Documentation = "https://mathysrennela.github.io/emlint/"
+Repository = "https://github.com/MathysRennela/emlint"
+Changelog = "https://github.com/MathysRennela/emlint/blob/main/CHANGELOG.md"
+Issues = "https://github.com/MathysRennela/emlint/issues"
+
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",

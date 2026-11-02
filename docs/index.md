@@ -26,7 +26,7 @@ emlint check circuit.dem --format sarif > emlint.sarif
 | Guide | Use it for |
 |---|---|
 | [CLI reference](cli.md) | Commands, options, output, and exit codes |
-| [Check catalog](checks.md) | What the six checks detect and how to interpret findings, plus the machine-readable output contract |
+| [Check catalog](checks.md) | What the ten checks detect and how to interpret findings, plus the machine-readable output contract |
 | [Debugging guide](debugging.md) | Check-specific causes and investigation steps |
 | [Agent integration guide](agent-integration.md) | Running emlint in a coding-agent fix-loop: exit-code handling, JSON contract, context declaration |
 | [Formal grounding](formal-grounding.md) | DEM vocabulary and formal properties |

@@ -14,6 +14,9 @@
   <a href="https://codecov.io/gh/MathysRennela/emlint"><img src="https://codecov.io/gh/MathysRennela/emlint/graph/badge.svg?branch=main" alt="Codecov"></a>
   <a href="https://github.com/MathysRennela/emlint/tree/main/docs"><img src="https://img.shields.io/badge/docs-reference-blue.svg?logo=readthedocs&logoColor=white" alt="Documentation"></a>
   <a href="https://github.com/MathysRennela/emlint/blob/main/LICENSE"><img src="https://img.shields.io/github/license/MathysRennela/emlint.svg" alt="License"></a>
+  <a href="https://github.com/MathysRennela/emlint/blob/main/CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant"></a>
+  <a href="https://unitary.foundation"><img src="https://img.shields.io/badge/Supported%20By-Unitary%20Foundation-FFFF00.svg" alt="Supported By Unitary Foundation"></a>
+  <a href="http://discord.unitary.foundation"><img src="https://img.shields.io/badge/dynamic/json?color=orange&label=Discord&query=approximate_presence_count&suffix=%20online.&url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FJqVGmpkP96%3Fwith_counts%3Dtrue" alt="Discord"></a>
   <a href="https://pepy.tech/project/emlint"><img src="https://static.pepy.tech/badge/emlint" alt="Downloads"></a>
 </p>
 
@@ -102,6 +105,15 @@ emlint check circuit.dem --only detectability,sensitivity
 emlint check circuit.dem --format sarif > emlint.sarif
 ```
 
+emlint accepts several input forms:
+
+| Starting point | Path |
+|---|---|
+| A `.dem` file on disk | `emlint check circuit.dem` or `emlint.check(pathlib.Path(...))` |
+| Raw DEM text | `emlint check 'error(0.01) D0 L0\ndetector D0'` or `emlint.check("...")` |
+| A Stim circuit / DEM | `emlint.check(circuit.detector_error_model())` |
+| A `pathlib.Path` | `emlint.check(path)` |
+
 Project defaults can be placed in `pyproject.toml` under `[tool.emlint]`. For
 all command options, configuration examples, and exit codes, see the [CLI reference](docs/cli.md).
 
@@ -129,7 +141,7 @@ print(emlint.format_text(report))
 |---|---|
 | [CLI reference](docs/cli.md) | Commands, options, output, and exit codes |
 | [Agent integration guide](docs/agent-integration.md) | Running emlint in a coding-agent fix-loop: exit-code handling, JSON contract, context declaration |
-| [Check catalog](docs/checks.md) | What the seven checks detect and how to interpret findings, plus the machine-readable output contract |
+| [Check catalog](docs/checks.md) | What the ten checks detect and how to interpret findings, plus the machine-readable output contract |
 | [Debugging guide](docs/debugging.md) | Check-specific causes and investigation steps |
 | [Formal grounding](docs/formal-grounding.md) | DEM vocabulary and formal properties |
 | [v0.2 limitations](docs/limitations.md) | Scope, warnings, repeat blocks, and provisional behavior |
@@ -182,12 +194,50 @@ pre-commit install
 The hook runs `emlint check --severity error` on staged `.dem` files. Warning-only
 findings remain non-blocking; input failures still return exit code `3`.
 
+## Repository layout
+
+| Path | Holds |
+|---|---|
+| `emlint/` | Package: checks, model, CLI, output formatters |
+| `docs/` | MkDocs site (CLI, check catalog, debugging, agent integration, formal grounding) |
+| `examples/` | Small DEM fixtures (`buggy.dem`, `fixed.dem`) |
+| `tests/` | Test suite |
+
+## Non-goals
+
+emlint is deliberately a **DEM-level** linter. It does not:
+
+- verify that the underlying circuit is semantically correct (use `stim`),
+- replace a decoder or estimate logical error rates,
+- judge whether a DEM is "good enough" for a given decoder beyond the
+  structural checks listed in the catalog,
+- or execute or simulate circuits.
+
+Findings establish structural properties of the DEM itself; circuit-level
+verification remains necessary.
+
+## Citation
+
+If you use emlint in your work, please cite the repository:
+
+```bibtex
+@software{rennela2026emlint,
+  title        = {emlint: a static linter for Stim Detector Error Models},
+  author       = {Mathys Rennela},
+  year         = {2026},
+  version      = {0.2.4},
+  publisher    = {Mathys Rennela},
+  url          = {https://github.com/MathysRennela/emlint},
+  license      = {Apache-2.0}
+}
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, how to add a
 check, test requirements, and quality gates.
 
-## Acknowledgments
+## AI Acknowledgement
 
 emlint is developed with AI assistance for scaffolding, test generation,
 red-teaming, and documentation. All design decisions, technical content, and

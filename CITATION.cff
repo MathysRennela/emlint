@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "emlint: a static linter for Stim Detector Error Models"
+authors:
+  - family-names: Rennela
+    given-names: Mathys
+repository-code: "https://github.com/MathysRennela/emlint"
+url: "https://github.com/MathysRennela/emlint"
+version: 0.2.4
+date-released: "2026-10-27"
+license: Apache-2.0
